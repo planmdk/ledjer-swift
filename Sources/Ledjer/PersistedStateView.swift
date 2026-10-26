@@ -68,6 +68,9 @@ public struct PersistedViewOptions: Sendable {
     public var commitRetries = 3
     /// The delay before the first retry, doubled for each following retry.
     public var commitBackoff: Duration = .milliseconds(100)
+    /// How long `close()` waits for the view to flush and stop before it
+    /// gives up waiting and closes the accumulator anyway.
+    public var closeTimeout: Duration = .seconds(5)
     /// Called once, after the view has stopped on a failure. The failure is
     /// also thrown by `accumulator()` and `awaitPosition`.
     public var onError: (@Sendable (any Error) -> Void)?
@@ -184,8 +187,19 @@ public final class PersistedViewHandle<Accumulator: PersistedAccumulator>: Senda
         try await engine.awaitPosition(position, timeout: timeout)
     }
 
-    /// Flushes the uncommitted events, stops the view and closes the
-    /// accumulator. Closing more than once does nothing.
+    /// The failure that stopped the view, if any. Unlike `accumulator()`, still
+    /// available after `close()`, e.g. for a failure of its final flush.
+    public var failure: (any Error)? { engine.failure }
+
+    /// Stops the view, and closes the accumulator.
+    ///
+    /// Stopping takes priority over events that are queued up: the view commits
+    /// the events it has already applied, and leaves the rest for the next
+    /// run, which resumes after the accumulator's last committed position. Waits
+    /// for that at most `options.closeTimeout`. Closing more than once, or
+    /// concurrently, shares one shutdown: every call returns once it is done.
+    ///
+    /// A failure of the final commit doesn't throw: see `failure` and `options.onError`.
     public func close() async {
         await engine.shutdown()
     }
@@ -262,6 +276,8 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
 
     // MARK: Handle operations
 
+    var failure: (any Error)? { state.failure }
+
     func accumulator() throws -> Accumulator {
         try state.check()
         return acc
@@ -294,8 +310,9 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
             state.markClosed()
             let task = Task { [self] in
                 let (inbox, worker, pump) = lock.withLock { (self.inbox, self.worker, self.pump) }
-                await inbox?.send(.stop)
-                await worker?.value
+                // Control lane: the worker takes it before any queued event.
+                inbox?.post(.stop)
+                if let worker { await waitForCompletion(of: worker, timeout: options.closeTimeout) }
                 pump?.cancel()
                 inbox?.close()
                 await acc.close()
@@ -414,6 +431,34 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
                 backoff = backoff * 2
                 attempt += 1
             }
+        }
+    }
+}
+
+/// Waits for `task` to finish, but at most `timeout`. The task is left running if it doesn't.
+private func waitForCompletion(of task: Task<Void, Never>, timeout: Duration) async {
+    final class Once: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Void, Never>?
+        init(_ continuation: CheckedContinuation<Void, Never>) { self.continuation = continuation }
+        func resume() {
+            let pending = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+                defer { continuation = nil }
+                return continuation
+            }
+            pending?.resume()
+        }
+    }
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        let once = Once(continuation)
+        let timer = Task {
+            try? await Task.sleep(for: timeout)
+            once.resume()
+        }
+        Task {
+            await task.value
+            timer.cancel()
+            once.resume()
         }
     }
 }

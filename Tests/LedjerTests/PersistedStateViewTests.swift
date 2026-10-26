@@ -321,3 +321,133 @@ func eventually(timeout: Duration = .seconds(2), _ condition: () async -> Bool) 
         try await Task.sleep(for: .milliseconds(5))
     }
 }
+
+/// An accumulator that takes its time, to give the view a backlog and `close()` something to wait for.
+actor SlowAccumulator: PersistedAccumulator {
+    typealias Operation = Add
+    private let commitDelay: Duration
+    private let closeDelay: Duration
+    private var gate: Bool
+    private var sequence: Position?
+    private var totals: [String: Int] = [:]
+    private(set) var closed = false
+    private(set) var commitCount = 0
+
+    /// With `gated`, commits wait until `openGate()`.
+    init(commitDelay: Duration = .zero, closeDelay: Duration = .zero, gated: Bool = false, lastSequence: Position? = nil) {
+        self.commitDelay = commitDelay
+        self.closeDelay = closeDelay
+        self.gate = !gated
+        self.sequence = lastSequence
+    }
+
+    func openGate() { gate = true }
+    var sequenceNumber: Position? { sequence }
+    func total(_ id: String) -> Int { totals[id, default: 0] }
+
+    func commit(_ operations: [Add], through position: Position) async throws {
+        while !gate { try await Task.sleep(for: .milliseconds(5)) }
+        try await Task.sleep(for: commitDelay)
+        for op in operations { totals[op.id, default: 0] += op.amount }
+        sequence = position
+        commitCount += 1
+    }
+
+    func close() async {
+        try? await Task.sleep(for: closeDelay)
+        closed = true
+    }
+}
+
+@Suite struct PersistedViewCloseTests {
+    @Test func closeDoesNotDrainTheBacklog() async throws {
+        let store = InMemoryEventStore()
+        let n = 3000
+        try await store.append((1...n).map { Counted(id: "a", num: $0) })
+        // 300 commits of 10 events at 20 ms each would take 6 s.
+        let acc = SlowAccumulator(commitDelay: .milliseconds(20))
+        let view = try await totalsView.start(on: store, accumulator: acc, options: fastOptions(maxSize: 10, maxInterval: .seconds(30)))
+        try await Task.sleep(for: .milliseconds(100))
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        await view.close()
+        #expect(clock.now - start < .seconds(2), "close took \(clock.now - start)")
+
+        let committed = try #require(await acc.sequenceNumber)
+        #expect(committed < n, "the backlog was left for the next run")
+        #expect(await acc.closed)
+
+        // What was committed is consistent, and a new run resumes exactly after it.
+        #expect(await acc.total("a") == committed * (committed + 1) / 2)
+        let resumed = try await totalsView.start(on: store, accumulator: acc, options: fastOptions(maxSize: 500))
+        try await resumed.awaitPosition(n, timeout: .seconds(10))
+        #expect(await acc.total("a") == n * (n + 1) / 2)
+        await resumed.close()
+    }
+
+    @Test func closeCommitsWhatWasAppliedButNotYetCommitted() async throws {
+        let store = InMemoryEventStore()
+        let acc = SlowAccumulator()
+        let view = try await totalsView.start(on: store, accumulator: acc, options: fastOptions(maxSize: 1000, maxInterval: .seconds(60)))
+        try await store.append([Counted(id: "a", num: 1), Counted(id: "a", num: 2)])
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await acc.sequenceNumber == nil)  // applied, waiting for the batch to fill
+        await view.close()
+        #expect(await acc.sequenceNumber == 2)
+        #expect(await acc.total("a") == 3)
+    }
+
+    @Test func closeStopsWaitingForAStuckWorkerAfterTheTimeout() async throws {
+        let store = InMemoryEventStore()
+        let acc = SlowAccumulator(gated: true)  // the first commit never finishes
+        var options = fastOptions(maxSize: 1)
+        options.closeTimeout = .milliseconds(200)
+        let view = try await totalsView.start(on: store, accumulator: acc, options: options)
+        try await store.append([Counted(id: "a", num: 1)])
+        try await Task.sleep(for: .milliseconds(100))
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        await view.close()
+        let took = clock.now - start
+        #expect(took >= .milliseconds(150) && took < .seconds(2), "close took \(took)")
+        #expect(await acc.closed)
+        await acc.openGate()  // let the stuck commit finish
+    }
+
+    @Test func concurrentClosesAllWaitForTheShutdown() async throws {
+        let acc = SlowAccumulator(closeDelay: .milliseconds(150))
+        let view = try await totalsView.start(on: InMemoryEventStore(), accumulator: acc, options: fastOptions())
+        async let first: Void = view.close()
+        async let second: Void = {
+            try? await Task.sleep(for: .milliseconds(30))  // arrives while the first is shutting down
+            await view.close()
+            return
+        }()
+        await second
+        #expect(await acc.closed, "the second close returned before the accumulator was closed")
+        await first
+    }
+
+    @Test func aFailureOfTheFinalFlushIsRecorded() async throws {
+        let store = InMemoryEventStore()
+        let acc = TotalsAccumulator(failingCommits: 100)
+        let reported = ErrorBox()
+        var options = fastOptions(maxSize: 1000, maxInterval: .seconds(60))
+        options.commitRetries = 1
+        options.onError = { reported.set($0) }
+        let view = try await totalsView.start(on: store, accumulator: acc, options: options)
+        try await store.append([Counted(id: "a", num: 1)])
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(view.failure == nil)
+
+        await view.close()
+        guard case PersistedViewError.commit(let position, _, _)? = view.failure else {
+            Issue.record("expected the commit failure, got \(String(describing: view.failure))")
+            return
+        }
+        #expect(position == 1)
+        #expect(reported.value != nil)
+    }
+}
