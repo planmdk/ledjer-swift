@@ -30,18 +30,24 @@ public final class GRDBAccumulator: PersistedAccumulator {
     private let writer: any DatabaseWriter
 
     /// `name` identifies the view's checkpoint. Use a different name per view.
+    ///
+    /// Applies the ledjer migrations if they haven't been, so it can be
+    /// created before or after the `GRDBEventStore`. See
+    /// `GRDBEventStore.registerMigrations(in:)` for apps with their own migrator.
     public init(name: String, writer: any DatabaseWriter) throws {
         self.name = name
         self.writer = writer
-        // Also created by GRDBEventStore's migration, for databases where events live elsewhere.
-        try writer.write { db in
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS ledjer_checkpoint (
-                    name     TEXT PRIMARY KEY NOT NULL,
-                    position INTEGER NOT NULL
-                )
-                """)
-        }
+        try LedjerSchema.migrate(writer)
+    }
+
+    /// Like `init(name:writer:)`, off the calling thread, for opening the database at launch.
+    public static func open(name: String, writer: any DatabaseWriter) async throws -> GRDBAccumulator {
+        try await Task.detached { try GRDBAccumulator(name: name, writer: writer) }.value
+    }
+
+    /// Same as `GRDBEventStore.registerMigrations(in:)`.
+    public static func registerMigrations(in migrator: inout DatabaseMigrator) {
+        LedjerSchema.registerMigrations(in: &migrator)
     }
 
     public var sequenceNumber: Position? {

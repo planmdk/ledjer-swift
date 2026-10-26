@@ -22,49 +22,27 @@ public final class GRDBEventStore: EventStore {
 
     /// Creates the store, migrating the database if needed.
     ///
-    /// Apps that run their own `DatabaseMigrator` can call
-    /// `registerMigrations(in:)` on it instead of letting the store migrate on its own.
+    /// Apps that run their own `DatabaseMigrator` should call
+    /// `registerMigrations(in:)` on it, see there.
     public init(_ writer: any DatabaseWriter) throws {
         self.writer = writer
-        var migrator = DatabaseMigrator()
-        Self.registerMigrations(in: &migrator)
-        try migrator.migrate(writer)
+        try LedjerSchema.migrate(writer)
     }
 
-    /// Registers the store's schema migrations.
+    /// Like `init(_:)`, off the calling thread, for opening the database at launch.
+    public static func open(_ writer: any DatabaseWriter) async throws -> GRDBEventStore {
+        try await Task.detached { try GRDBEventStore(writer) }.value
+    }
+
+    /// Registers the migrations of the ledjer tables (events, tags and view checkpoints).
+    ///
+    /// Creating a `GRDBEventStore` or a `GRDBAccumulator` applies them as
+    /// well, in any order and any number of times. An app that has its own
+    /// `DatabaseMigrator` must register them there too if it sets
+    /// `eraseDatabaseOnSchemaChange`: otherwise GRDB sees the ledjer tables as
+    /// unknown schema and erases the database, events included, on a schema change.
     public static func registerMigrations(in migrator: inout DatabaseMigrator) {
-        migrator.registerMigration("ledjer-1-events") { db in
-            try db.execute(sql: """
-                CREATE TABLE ledjer_event (
-                    position INTEGER PRIMARY KEY AUTOINCREMENT,
-                    type     TEXT NOT NULL,
-                    metadata BLOB NOT NULL,
-                    payload  BLOB NOT NULL
-                );
-                CREATE INDEX ledjer_event_type ON ledjer_event (type, position);
-
-                -- The tags of an event, as "<source>.<key>" = "<type>:<value>".
-                CREATE TABLE ledjer_event_tag (
-                    position INTEGER NOT NULL REFERENCES ledjer_event (position),
-                    name     TEXT NOT NULL,
-                    value    TEXT NOT NULL,
-                    PRIMARY KEY (position, name)
-                ) WITHOUT ROWID;
-                CREATE INDEX ledjer_event_tag_lookup ON ledjer_event_tag (name, value, position);
-
-                -- The log is append-only.
-                CREATE TRIGGER ledjer_event_no_update BEFORE UPDATE ON ledjer_event
-                BEGIN SELECT RAISE(ABORT, 'ledjer events are immutable'); END;
-                CREATE TRIGGER ledjer_event_no_delete BEFORE DELETE ON ledjer_event
-                BEGIN SELECT RAISE(ABORT, 'ledjer events are immutable'); END;
-
-                -- Where persisted views (see GRDBAccumulator) have got to.
-                CREATE TABLE ledjer_checkpoint (
-                    name     TEXT PRIMARY KEY NOT NULL,
-                    position INTEGER NOT NULL
-                );
-                """)
-        }
+        LedjerSchema.registerMigrations(in: &migrator)
     }
 
     // MARK: EventStore
