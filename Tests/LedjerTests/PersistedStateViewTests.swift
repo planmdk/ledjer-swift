@@ -141,6 +141,8 @@ private func fastOptions(maxSize: Int = 64, maxInterval: Duration = .millisecond
         try await view.awaitPosition(6)
         #expect(await acc.commits.map(\.position) == [3, 6])
         #expect(await acc.total("a") == 21)  // 1 + ... + 6
+        // Close commits what has been applied; an event still queued would be left for the next run.
+        try await Task.sleep(for: .milliseconds(100))
         await view.close()
         #expect(await acc.commits.map(\.position) == [3, 6, 7])
         #expect(await acc.total("a") == 28)
