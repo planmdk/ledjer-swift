@@ -253,7 +253,11 @@ private func fastOptions(maxSize: Int = 64, maxInterval: Duration = .millisecond
 
         let clock = ContinuousClock()
         let start = clock.now
-        await #expect(throws: PersistedViewError.self) { try await view.awaitPosition(position, timeout: .seconds(5)) }
+        do {
+            try await view.awaitPosition(position, timeout: .seconds(5))
+            Issue.record("expected the closed error")
+        } catch PersistedViewError.closed {
+        }
         #expect(clock.now - start < .seconds(1))  // not after the timeout
         do {
             _ = try view.accumulator()
@@ -264,17 +268,24 @@ private func fastOptions(maxSize: Int = 64, maxInterval: Duration = .millisecond
 
     @Test func closingReleasesAWaiter() async throws {
         let store = InMemoryEventStore()
-        let acc = TotalsAccumulator()
-        let view = try await totalsView.start(on: store, accumulator: acc, options: fastOptions(maxSize: 1000, maxInterval: .seconds(60)))
+        // The commit never finishes, so the event can't be committed: only the close can end the wait.
+        let acc = SlowAccumulator(gated: true)
+        var options = fastOptions(maxSize: 1)
+        options.closeTimeout = .milliseconds(500)
+        let view = try await totalsView.start(on: store, accumulator: acc, options: options)
         let position = try await store.append([Counted(id: "a", num: 1)])
-        async let waiting: Void = view.awaitPosition(position, timeout: .seconds(10))
-        try await Task.sleep(for: .milliseconds(100))
-        await view.close()
+        try await eventually { await acc.commitsEntered == 1 }
+
+        let waiting = Task { try await view.awaitPosition(position, timeout: .seconds(30)) }
+        try await Task.sleep(for: .milliseconds(50))  // let it start waiting; the assertion below doesn't depend on it
+        let closing = Task { await view.close() }
         do {
-            try await waiting
-            // The close flushed the applied event, so the wait may also have seen it commit.
+            try await waiting.value
+            Issue.record("the wait can't have seen the event committed")
         } catch PersistedViewError.closed {
         }
+        await closing.value
+        await acc.openGate()
     }
 
     @Test func nonsensicalOptionsAreClamped() async throws {

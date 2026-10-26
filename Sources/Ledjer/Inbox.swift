@@ -11,6 +11,11 @@ import Foundation
 ///
 /// `close` ends it: blocked senders are released, and `receive` returns
 /// `nil` once the queues are empty.
+///
+/// A sender waiting in `send` does not react to its task being cancelled: it
+/// stays blocked until a `receive` makes room, or `close` releases it. Whoever
+/// cancels a producer must therefore close the inbox too, as the persisted view
+/// does when its worker ends.
 final class Inbox<Message: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private let capacity: Int

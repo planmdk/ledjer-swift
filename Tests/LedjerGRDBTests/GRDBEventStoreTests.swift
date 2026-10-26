@@ -62,8 +62,11 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
         #expect(tags == 1)  // the one event's orderId; it has no customer
     }
 
-    /// The query plan of the SQL the store really generates, after filling the log.
-    private func plan(_ query: Query, after: Position = 0, upTo: Position? = nil, limit: Int? = nil) throws -> [String] {
+    /// The query plan of `sql(query)`, a statement the store really generates, after filling the log.
+    private func plan(
+        _ query: Query,
+        _ sql: (Query) -> (sql: String, arguments: StatementArguments)?
+    ) throws -> [String] {
         let queue = try DatabaseQueue()
         _ = try GRDBEventStore(queue)
         try queue.write { db in
@@ -77,18 +80,36 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
             }
             try db.execute(sql: "ANALYZE")
         }
-        let (sql, arguments) = try #require(GRDBEventStore.positionsSQL(for: query, after: after, upTo: upTo, limit: limit))
+        let statement = try #require(sql(query))
         return try queue.read { db in
-            try Row.fetchAll(db, sql: "EXPLAIN QUERY PLAN \(sql)", arguments: arguments).map { $0["detail"] as String }
+            try Row.fetchAll(db, sql: "EXPLAIN QUERY PLAN \(statement.sql)", arguments: statement.arguments).map { $0["detail"] as String }
         }
+    }
+
+    /// Every statement the store runs to find events: the positions, the events, the last position.
+    private func statements(after: Position = 0, upTo: Position? = nil, limit: Int? = nil)
+        -> [(name: String, sql: (Query) -> (sql: String, arguments: StatementArguments)?)]
+    {
+        [
+            ("positions", { GRDBEventStore.positionsSQL(for: $0, after: after, upTo: upTo, limit: limit) }),
+            ("events", { GRDBEventStore.eventsSQL(for: $0, after: after, upTo: upTo, limit: limit) }),
+            ("last position", { GRDBEventStore.lastPositionSQL(for: $0, through: upTo ?? 1000) }),
+        ]
+    }
+
+    private func neverScansTheLog(_ plan: [String]) -> Bool {
+        !plan.contains { $0.contains("SCAN e") || $0.contains("SCAN ledjer_event ") || $0.contains("SCAN ledjer_event_tag") }
     }
 
     @Test func taggedSelectorsAreDrivenByTheTagIndex() throws {
         let query = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(UUID())])
-        for plan in [try plan(query), try plan(query, after: 10, upTo: 1000, limit: 500)] {
-            #expect(plan.contains { $0.contains("ledjer_event_tag_lookup") && $0.contains("name=?") && $0.contains("value=?") }, "\(plan)")
-            // The log itself is never scanned or walked for a tagged selector.
-            #expect(!plan.contains { $0.contains("SCAN e") || $0.contains("SCAN ledjer_event ") || $0.contains("ledjer_event_type") }, "\(plan)")
+        for variant in [statements(), statements(after: 10, upTo: 1000, limit: 500)] {
+            for (name, sql) in variant {
+                let plan = try plan(query, sql)
+                #expect(plan.contains { $0.contains("ledjer_event_tag_lookup") && $0.contains("name=?") && $0.contains("value=?") }, "\(name): \(plan)")
+                // The log is neither scanned nor walked by type for a tagged selector.
+                #expect(neverScansTheLog(plan) && !plan.contains { $0.contains("ledjer_event_type") }, "\(name): \(plan)")
+            }
         }
     }
 
@@ -97,15 +118,20 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
             try QueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())]),
             try QueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())]),
         ])
-        let plan = try plan(query, limit: 1)
-        #expect(plan.filter { $0.contains("ledjer_event_tag_lookup") }.count >= 2, "\(plan)")
-        #expect(!plan.contains { $0.contains("SCAN e") || $0.contains("SCAN ledjer_event ") }, "\(plan)")
+        for (name, sql) in statements(limit: 1) {
+            let plan = try plan(query, sql)
+            #expect(plan.filter { $0.contains("ledjer_event_tag_lookup") }.count >= 2, "\(name): \(plan)")
+            #expect(neverScansTheLog(plan), "\(name): \(plan)")
+        }
     }
 
     @Test func untaggedSelectorsUseTheTypeIndex() throws {
-        let plan = try plan(try Query.of(OrderPlaced.self), after: 5)
-        #expect(plan.contains { $0.contains("ledjer_event_type") }, "\(plan)")
-        #expect(!plan.contains { $0.contains("SCAN") && !$0.contains("USING") }, "\(plan)")
+        let query = try Query.of(OrderPlaced.self)
+        for (name, sql) in statements(after: 5) {
+            let plan = try plan(query, sql)
+            #expect(plan.contains { $0.contains("ledjer_event_type") }, "\(name): \(plan)")
+            #expect(neverScansTheLog(plan), "\(name): \(plan)")
+        }
     }
 }
 

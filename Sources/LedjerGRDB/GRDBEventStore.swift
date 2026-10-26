@@ -86,10 +86,8 @@ public final class GRDBEventStore: EventStore {
 
     public func lastPosition(matching query: Query, through position: Position) async throws -> Position? {
         try await writer.read { db in
-            guard let (positions, arguments) = Self.positionsSQL(
-                for: query, after: 0, upTo: position, limit: 1, descending: true)
-            else { return nil }
-            return try Int.fetchOne(db, sql: "SELECT MAX(position) FROM (\(positions))", arguments: arguments)
+            guard let (sql, arguments) = Self.lastPositionSQL(for: query, through: position) else { return nil }
+            return try Int.fetchOne(db, sql: sql, arguments: arguments)
         }
     }
 
@@ -187,12 +185,7 @@ public final class GRDBEventStore: EventStore {
         upTo: Position?,
         limit: Int?
     ) throws -> [StoredEvent] {
-        guard var (sql, arguments) = positionsSQL(for: query, after: after, upTo: upTo, limit: limit) else { return [] }
-        sql = "SELECT e.position, e.type, e.metadata, e.payload FROM ledjer_event e WHERE e.position IN (\(sql)) ORDER BY e.position"
-        if let limit {
-            sql += " LIMIT ?"
-            arguments += [limit]
-        }
+        guard let (sql, arguments) = eventsSQL(for: query, after: after, upTo: upTo, limit: limit) else { return [] }
         return try Row.fetchAll(db, sql: sql, arguments: arguments).map { row in
             StoredEvent(
                 position: row["position"],
@@ -201,6 +194,30 @@ public final class GRDBEventStore: EventStore {
                 payload: row["payload"]
             )
         }
+    }
+
+    /// SQL selecting the events of `query` within `(after, upTo]`, in order, or `nil` if the query selects nothing.
+    static func eventsSQL(
+        for query: Query,
+        after: Position,
+        upTo: Position?,
+        limit: Int?
+    ) -> (sql: String, arguments: StatementArguments)? {
+        guard var (sql, arguments) = positionsSQL(for: query, after: after, upTo: upTo, limit: limit) else { return nil }
+        sql = "SELECT e.position, e.type, e.metadata, e.payload FROM ledjer_event e WHERE e.position IN (\(sql)) ORDER BY e.position"
+        if let limit {
+            sql += " LIMIT ?"
+            arguments += [limit]
+        }
+        return (sql, arguments)
+    }
+
+    /// SQL for the position of the last event of `query` at or before `position`, or `nil` if the query selects nothing.
+    static func lastPositionSQL(for query: Query, through position: Position) -> (sql: String, arguments: StatementArguments)? {
+        guard let (positions, arguments) = positionsSQL(for: query, after: 0, upTo: position, limit: 1, descending: true) else {
+            return nil
+        }
+        return ("SELECT MAX(position) FROM (\(positions))", arguments)
     }
 
     /// SQL selecting the positions of the events of `query` within `(after, upTo]`, or `nil`

@@ -132,7 +132,9 @@ private func reactImmediately(_ store: any EventStore) async throws -> Automatio
         try await Task.sleep(for: .milliseconds(200))  // time passes while the trigger exists
         let runs = Counter()
         let running = try await automation(on: InMemoryEventStore(), triggers: [trigger]) { _ in runs.increment() }
-        #expect(runs.value <= 1)  // no burst of ticks from before it started
+        try await Task.sleep(for: .milliseconds(50))
+        // About 5 ticks since it started. The 200 ms before would have been 20 more, as a burst.
+        #expect(runs.value < 12, "runs: \(runs.value)")
         running.stop()
     }
 
