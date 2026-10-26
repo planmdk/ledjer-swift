@@ -32,6 +32,12 @@ public actor InMemoryEventStore: EventStore {
             .map(\.event)
     }
 
+    /// Every event from `startPosition` (inclusive) on, whatever its type.
+    public func allEvents(startPosition: Position? = nil) -> [StoredEvent] {
+        let start = startPosition ?? 0
+        return entries.map(\.event).filter { $0.position >= start }
+    }
+
     public func subscribe(
         _ query: Query,
         startPosition: Position?

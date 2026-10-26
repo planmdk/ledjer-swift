@@ -29,7 +29,7 @@ private func sameTypeAndPayload(_ actual: [StoredEvent], _ expected: [NewEvent])
 /// Given `given` events, `change` appends `then`: a state change.
 ///
 /// Only events of the types in `then` are compared, with their types and
-/// payloads, in order.
+/// payloads, in order. With an empty `then`, the change must append nothing at all.
 public func gwt(
     given: [any Event] = [],
     when change: (any EventStore) async throws -> Void,
@@ -39,7 +39,10 @@ public func gwt(
     let last = try await store.append(given)
     let start = (last ?? 0) + 1
     try await change(store)
-    let actual = try await store.source(eventTypes(of: expected), startPosition: start)
+    let actual =
+        expected.isEmpty
+        ? await store.allEvents(startPosition: start)
+        : try await store.source(eventTypes(of: expected), startPosition: start)
     let wanted = try expected.map { try NewEvent($0) }
     guard sameTypeAndPayload(actual, wanted) else {
         throw ScenarioFailure("Expected new events \(describe(wanted)), got \(describe(actual))")
@@ -91,7 +94,8 @@ public func gwt<Acc: Equatable & Sendable>(
 ///
 /// `automation` starts the automation on the given store. The `then` events
 /// are compared with their types and payloads, in order, among the events of
-/// the types in `then` that arrive after `given`.
+/// the types in `then` that arrive after `given`. With an empty `then`, the
+/// automation must append nothing at all, which is checked after `timeout`.
 public func gt(
     automation start: (any EventStore) async throws -> Automation,
     given: [any Event] = [],
@@ -106,7 +110,14 @@ public func gt(
     let stream = try await store.subscribe(eventTypes(of: expected), startPosition: (last ?? 0) + 1)
     let wanted = try expected.map { try NewEvent($0) }
     let count = wanted.count
-    guard count > 0 else { return }
+    guard count > 0 else {
+        try await Task.sleep(for: timeout)
+        let unexpected = await store.allEvents(startPosition: (last ?? 0) + 1)
+        guard unexpected.isEmpty else {
+            throw ScenarioFailure("Expected no new events, got \(describe(unexpected))")
+        }
+        return
+    }
 
     let actual: [StoredEvent] = try await withThrowingTaskGroup(of: [StoredEvent]?.self) { group in
         group.addTask {

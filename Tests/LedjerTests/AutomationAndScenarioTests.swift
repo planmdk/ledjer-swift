@@ -52,7 +52,24 @@ private func reactImmediately(_ store: any EventStore) async throws -> Automatio
     }
 
     @Test func noGivenAndNoThen() async throws {
-        try await gt(automation: reactImmediately, given: [], then: [])
+        try await gt(automation: reactImmediately, given: [], then: [], timeout: .milliseconds(100))
+    }
+
+    @Test func anEmptyThenMeansNothingIsAppended() async throws {
+        try await gt(
+            automation: { try await automation(on: $0, triggers: [.event(Counted.self)]) { _ in } },
+            given: [Counted(id: "a", num: 1)],
+            then: [],
+            timeout: .milliseconds(100)
+        )
+        await #expect(throws: ScenarioFailure.self) {
+            try await gt(
+                automation: reactImmediately,
+                given: [Counted(id: "a", num: 1)],
+                then: [],
+                timeout: .milliseconds(200)
+            )
+        }
     }
 }
 
@@ -201,6 +218,17 @@ private func reactImmediately(_ store: any EventStore) async throws -> Automatio
             when: { try await placeOrder($0, id: "1") },
             then: [Ignored(id: "1")]
         )
+    }
+
+    @Test func anEmptyThenMeansNothingIsAppended() async throws {
+        try await gwt(given: [Counted(id: "1", num: 1)], when: { _ in }, then: [])
+        await #expect(throws: ScenarioFailure.self) {
+            try await gwt(when: { try await placeOrder($0, id: "1") }, then: [])
+        }
+        // Not just events of some type: any event is one too many.
+        await #expect(throws: ScenarioFailure.self) {
+            try await gwt(when: { try await $0.append([Reacted(id: "x")]) }, then: [])
+        }
     }
 
     @Test func aWrongEventFails() async throws {
