@@ -231,6 +231,38 @@ private func fastOptions(maxSize: Int = 64, maxInterval: Duration = .millisecond
         #expect(await acc.total("a") == 0)
     }
 
+    @Test func aClosedViewSaysSo() async throws {
+        let store = InMemoryEventStore()
+        let view = try await totalsView.start(on: store, accumulator: TotalsAccumulator(), options: fastOptions())
+        let position = try await store.append([Counted(id: "a", num: 1)])
+        await view.close()
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        await #expect(throws: PersistedViewError.self) { try await view.awaitPosition(position, timeout: .seconds(5)) }
+        #expect(clock.now - start < .seconds(1))  // not after the timeout
+        do {
+            _ = try view.accumulator()
+            Issue.record("expected the closed error")
+        } catch PersistedViewError.closed {
+        }
+    }
+
+    @Test func closingReleasesAWaiter() async throws {
+        let store = InMemoryEventStore()
+        let acc = TotalsAccumulator()
+        let view = try await totalsView.start(on: store, accumulator: acc, options: fastOptions(maxSize: 1000, maxInterval: .seconds(60)))
+        let position = try await store.append([Counted(id: "a", num: 1)])
+        async let waiting: Void = view.awaitPosition(position, timeout: .seconds(10))
+        try await Task.sleep(for: .milliseconds(100))
+        await view.close()
+        do {
+            try await waiting
+            // The close flushed the applied event, so the wait may also have seen it commit.
+        } catch PersistedViewError.closed {
+        }
+    }
+
     @Test func closingTwiceIsANoOp() async throws {
         let acc = TotalsAccumulator()
         let view = try await totalsView.start(on: InMemoryEventStore(), accumulator: acc)

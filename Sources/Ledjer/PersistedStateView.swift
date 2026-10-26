@@ -85,6 +85,8 @@ public enum PersistedViewError: Error, CustomStringConvertible {
     case commit(position: Position, attempts: Int, underlying: any Error)
     /// `awaitPosition` timed out.
     case awaitTimedOut(position: Position, target: Position, committed: Position?)
+    /// The view has been closed.
+    case closed
 
     public var description: String {
         switch self {
@@ -94,6 +96,8 @@ public enum PersistedViewError: Error, CustomStringConvertible {
             "Persisted view reducer failed on \(type) at \(position): \(underlying)"
         case .commit(let position, let attempts, let underlying):
             "Persisted view commit through \(position) failed after \(attempts) attempts: \(underlying)"
+        case .closed:
+            "The persisted view is closed"
         case .awaitTimedOut(let position, let target, let committed):
             "Timed out awaiting position \(position) (target \(target), committed \(committed.map(String.init) ?? "nothing"))"
         }
@@ -164,7 +168,8 @@ public final class PersistedViewHandle<Accumulator: PersistedAccumulator>: Senda
         Task { await engine.shutdown() }
     }
 
-    /// The accumulator. Throws the view's failure if it has failed.
+    /// The accumulator. Throws the view's failure if it has failed, and
+    /// `PersistedViewError.closed` once the view is closed (the accumulator has been closed too).
     public func accumulator() throws -> Accumulator {
         try engine.accumulator()
     }
@@ -173,7 +178,8 @@ public final class PersistedViewHandle<Accumulator: PersistedAccumulator>: Senda
     /// including `position`, e.g. as returned by `append`. Returns immediately
     /// if `position` is `nil` or no such event applies to the view.
     ///
-    /// Throws the view's failure, or `PersistedViewError.awaitTimedOut`.
+    /// Throws the view's failure, `PersistedViewError.awaitTimedOut`, or
+    /// `PersistedViewError.closed` if the view is, or gets, closed.
     public func awaitPosition(_ position: Position?, timeout: Duration = .seconds(1)) async throws {
         try await engine.awaitPosition(position, timeout: timeout)
     }
@@ -189,8 +195,19 @@ public final class PersistedViewHandle<Accumulator: PersistedAccumulator>: Senda
 final class PersistedViewState: @unchecked Sendable {
     private let lock = NSLock()
     private var _failure: (any Error)?
+    private var _closed = false
 
     var failure: (any Error)? { lock.withLock { _failure } }
+
+    /// Throws `PersistedViewError.closed` after the view has been closed, otherwise its failure, if any.
+    func check() throws {
+        try lock.withLock {
+            if _closed { throw PersistedViewError.closed }
+            if let _failure { throw _failure }
+        }
+    }
+
+    func markClosed() { lock.withLock { _closed = true } }
 
     /// Records the first failure. Returns whether this was it.
     func fail(_ error: any Error) -> Bool {
@@ -239,11 +256,12 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
     // MARK: Handle operations
 
     func accumulator() throws -> Accumulator {
-        if let failure = state.failure { throw failure }
+        try state.check()
         return acc
     }
 
     func awaitPosition(_ position: Position?, timeout: Duration) async throws {
+        try state.check()
         guard let position else { return }
         let committed = try await acc.sequenceNumber
         let pending = try await store.source(query, startPosition: committed.map { $0 + 1 } ?? 0)
@@ -252,7 +270,7 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
         let clock = ContinuousClock()
         let deadline = clock.now + timeout
         while true {
-            if let failure = state.failure { throw failure }
+            try state.check()
             let current = try await acc.sequenceNumber
             if let current, current >= target { return }
             if clock.now > deadline {
@@ -266,6 +284,7 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
     func shutdown() async {
         let task: Task<Void, Never> = lock.withLock {
             if let shutdownTask { return shutdownTask }
+            state.markClosed()
             let task = Task { [self] in
                 let (inbox, worker, pump) = lock.withLock { (self.inbox, self.worker, self.pump) }
                 inbox?.yield(.stop)
