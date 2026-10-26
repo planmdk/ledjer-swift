@@ -701,6 +701,11 @@ actor FencedAccumulator: PersistedAccumulator {
     var sequenceNumber: Position? { sequence }
     func total(_ id: String) -> Int { totals[id, default: 0] }
 
+    /// Lets the longest-held-up commit go on, and no other.
+    func releaseOldest() {
+        if !waiting.isEmpty { waiting.removeFirst().resume() }
+    }
+
     /// Lets the held-up commits go on.
     func openGate() {
         gated = false
@@ -847,7 +852,9 @@ actor FencedAccumulator: PersistedAccumulator {
         // The new view reads the accumulator before the stale commit has landed, and its own commit waits too.
         let fresh = try await totalsView.start(on: store, accumulator: acc, options: fastOptions(maxSize: 1))
         try await eventually { await acc.attempts == 2 }
-        await acc.openGate()  // the stale commit goes first, then the new view's
+        await acc.releaseOldest()  // the stale commit goes first...
+        try await eventually { await acc.applied == 1 }
+        await acc.openGate()  // ...then the new view's
 
         do {
             try await fresh.awaitPosition(position)
