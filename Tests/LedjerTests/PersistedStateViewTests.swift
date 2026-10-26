@@ -688,6 +688,7 @@ actor FencedAccumulator: PersistedAccumulator {
     private var totals: [String: Int] = [:]
     private var loseAcknowledgement: Bool
     private var gated: Bool
+    private var failNext = false
     private var waiting: [CheckedContinuation<Void, Never>] = []
     private(set) var attempts = 0
     private(set) var applied = 0
@@ -700,6 +701,12 @@ actor FencedAccumulator: PersistedAccumulator {
 
     var sequenceNumber: Position? { sequence }
     func total(_ id: String) -> Int { totals[id, default: 0] }
+
+    /// Makes the next commit fail before it applies anything, like a transient error.
+    func failNextCommit() { failNext = true }
+
+    /// Moves the accumulator as another committer would.
+    func move(to position: Position) { sequence = position }
 
     /// Lets the longest-held-up commit go on, and no other.
     func releaseOldest() {
@@ -728,6 +735,10 @@ actor FencedAccumulator: PersistedAccumulator {
             // Not cancellable: it waits for the gate, however cancelled the task is.
             await withCheckedContinuation { waiting.append($0) }
         }
+        if failNext {
+            failNext = false
+            throw CommitFailed()
+        }
         guard sequence == checkpoint else { throw PersistedAccumulatorConflict(expected: checkpoint, actual: sequence) }
         for op in operations { totals[op.id, default: 0] += op.amount }
         sequence = position
@@ -740,6 +751,31 @@ actor FencedAccumulator: PersistedAccumulator {
 }
 
 @Suite struct PersistedViewFencingTests {
+    /// A retry that finds the accumulator somewhere else than where its own commit would have left it
+    /// has not been acknowledged-and-lost: someone else committed, and carrying on would skip events.
+    @Test func aRetryThatFindsTheAccumulatorElsewhereIsAConflict() async throws {
+        let store = InMemoryEventStore()
+        let acc = FencedAccumulator()
+        var options = fastOptions(maxSize: 1)
+        options.commitBackoff = .milliseconds(300)  // time to move the accumulator between the attempts
+        await acc.failNextCommit()
+        let view = try await totalsView.start(on: store, accumulator: acc, options: options)
+        let position = try await store.append([Counted(id: "a", num: 1)])
+        try await eventually { await acc.attempts == 1 }  // failed, now backing off
+        await acc.move(to: 5)  // another committer got ahead
+
+        do {
+            try await view.awaitPosition(position)
+            Issue.record("expected the commit to fail with a conflict")
+        } catch PersistedViewError.commit(_, let attempts, let underlying) {
+            #expect(underlying is PersistedAccumulatorConflict)
+            #expect(attempts == 2)
+        }
+        #expect(await acc.applied == 0)
+        #expect(view.failure != nil)
+        await view.close()
+    }
+
     @Test func aCommitThatLandedButWasNotAcknowledgedIsNotAConflictWithItself() async throws {
         let store = InMemoryEventStore()
         let acc = FencedAccumulator(loseAcknowledgementOnce: true)
