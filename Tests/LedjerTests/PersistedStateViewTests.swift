@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import Ledjer
 import LedjerStoreContract
@@ -359,6 +360,8 @@ actor SlowAccumulator: PersistedAccumulator {
     private(set) var commitCount = 0
     /// How many commits have been started, finished or not.
     private(set) var commitsEntered = 0
+    /// How many commits ended because the view cancelled its worker.
+    private(set) var cancelledCommits = 0
 
     /// With `gated`, commits wait until `openGate()`.
     init(commitDelay: Duration = .zero, closeDelay: Duration = .zero, gated: Bool = false, lastSequence: Position? = nil) {
@@ -374,8 +377,13 @@ actor SlowAccumulator: PersistedAccumulator {
 
     func commit(_ operations: [Add], through position: Position) async throws {
         commitsEntered += 1
-        while !gate { try await Task.sleep(for: .milliseconds(5)) }
-        try await Task.sleep(for: commitDelay)
+        do {
+            while !gate { try await Task.sleep(for: .milliseconds(5)) }
+            try await Task.sleep(for: commitDelay)
+        } catch {
+            cancelledCommits += 1
+            throw error
+        }
         for op in operations { totals[op.id, default: 0] += op.amount }
         sequence = position
         commitCount += 1
@@ -737,5 +745,120 @@ actor FencedAccumulator: PersistedAccumulator {
         try await view.awaitPosition(more)
         #expect(await acc.total("a") == 5)
         await view.close()
+    }
+}
+
+@Suite struct PersistedViewCancellationTests {
+    /// The worker that `close()` gives up on is stopped, not failed: nothing is reported for it.
+    @Test func aCloseTimeoutIsNotAFailureOfTheView() async throws {
+        let store = InMemoryEventStore()
+        let acc = SlowAccumulator(gated: true)
+        let reported = ErrorBox()
+        var options = fastOptions(maxSize: 1)
+        options.closeTimeout = .milliseconds(100)
+        options.onError = { reported.set($0) }
+        let view = try await totalsView.start(on: store, accumulator: acc, options: options)
+        try await store.append([Counted(id: "a", num: 1)])
+        try await eventually { await acc.commitsEntered == 1 }
+
+        await view.close()
+        try await eventually { await acc.cancelledCommits == 1 }
+        try await Task.sleep(for: .milliseconds(100))  // for the worker to deal with it
+        #expect(view.failure == nil)
+        #expect(reported.value == nil)
+    }
+
+    @Test func cancellationDuringTheRetryBackoffStartsNoFurtherAttempt() async throws {
+        let store = InMemoryEventStore()
+        let acc = TotalsAccumulator(failingCommits: 100)
+        let reported = ErrorBox()
+        var options = fastOptions(maxSize: 1)
+        options.commitBackoff = .seconds(30)
+        options.closeTimeout = .milliseconds(100)
+        options.onError = { reported.set($0) }
+        let view = try await totalsView.start(on: store, accumulator: acc, options: options)
+        try await store.append([Counted(id: "a", num: 1)])
+        try await eventually { await acc.commitAttempts == 1 }  // failed, now backing off for 30 s
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        await view.close()
+        #expect(clock.now - start < .seconds(5), "close waited for the backoff")
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await acc.commitAttempts == 1, "no attempt after the cancellation")
+        #expect(view.failure == nil)
+        #expect(reported.value == nil)
+    }
+
+    /// A cancelled worker stops applying events, even when the commit it was stuck in could not be cancelled.
+    @Test func aCancelledWorkerAppliesNothingFurther() async throws {
+        let store = InMemoryEventStore()
+        let acc = FencedAccumulator(gated: true)  // the first commit can't be cancelled
+        let applied = Counter()
+        var options = fastOptions(maxSize: 1)
+        options.closeTimeout = .milliseconds(100)
+        let view = try await observedView(applied).start(on: store, accumulator: acc, options: options)
+        try await store.append((1...5).map { Counted(id: "a", num: $0) })
+        try await eventually { await acc.attempts == 1 }
+
+        await view.close()  // gives up on the stuck commit, and cancels the worker
+        await acc.openGate()  // the stale commit lands, and the worker is free again
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(applied.value == 1, "the cancelled worker went on to apply \(applied.value) events")
+        #expect(await acc.applied == 1)
+    }
+
+    /// A worker cancelled while it is between taking an event and committing it starts no commit.
+    @Test func aWorkerCancelledJustBeforeACommitDoesNotStartIt() async throws {
+        let store = InMemoryEventStore()
+        let acc = SlowAccumulator()
+        let inReducer = Counter()
+        let release = DispatchSemaphore(value: 0)
+        let blocking = PersistedStateView<Add>(bindings: [
+            .on(Counted.self) { event in
+                inReducer.increment()
+                release.wait()  // the worker is stuck here, not in a commit
+                return [Add(id: event.id, amount: event.num)]
+            },
+        ])
+        var options = fastOptions(maxSize: 1)
+        options.closeTimeout = .milliseconds(100)
+        let view = try await blocking.start(on: store, accumulator: acc, options: options)
+        try await store.append([Counted(id: "a", num: 1)])
+        try await inReducer.wait(for: 1)
+
+        await view.close()  // times out, and cancels the worker
+        release.signal()
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(await acc.commitsEntered == 0, "a commit was started after the worker was cancelled")
+    }
+
+    /// The stale view's commit can't be called back; the fence decides, and it is the *new* view that loses.
+    @Test func aStaleUncancellableCommitFencesOffTheNewView() async throws {
+        let store = InMemoryEventStore()
+        let acc = FencedAccumulator(gated: true)
+        var options = fastOptions(maxSize: 1)
+        options.closeTimeout = .milliseconds(100)
+        let stale = try await totalsView.start(on: store, accumulator: acc, options: options)
+        let position = try await store.append([Counted(id: "a", num: 1)])
+        try await eventually { await acc.attempts == 1 }
+        await stale.close()
+
+        // The new view reads the accumulator before the stale commit has landed, and its own commit waits too.
+        let fresh = try await totalsView.start(on: store, accumulator: acc, options: fastOptions(maxSize: 1))
+        try await eventually { await acc.attempts == 2 }
+        await acc.openGate()  // the stale commit goes first, then the new view's
+
+        do {
+            try await fresh.awaitPosition(position)
+            Issue.record("expected the new view to be fenced off")
+        } catch PersistedViewError.commit(_, let attempts, let underlying) {
+            #expect(underlying is PersistedAccumulatorConflict)
+            #expect(attempts == 1, "a conflict is not retried")
+        }
+        #expect(await acc.total("a") == 1, "the event was applied once")
+        #expect(await acc.applied == 1)
+        #expect(stale.failure == nil, "and the stale view, closed already, has nothing to report")
+        await fresh.close()
     }
 }
