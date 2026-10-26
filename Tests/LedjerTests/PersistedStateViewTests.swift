@@ -518,6 +518,9 @@ struct ScriptedSubscriptions: EventStore {
         case fails
         /// The stream has all of `events` ready at once, and `terminated` is raised when it is let go of.
         case floods(events: [StoredEvent], terminated: Counter)
+        /// The stream waits for events, and when its consumer is cancelled it throws `CancellationError`
+        /// instead of finishing, as a store that is reading when the cancellation lands might.
+        case failsWhenCancelled
     }
 
     struct Boom: Error {}
@@ -538,6 +541,11 @@ struct ScriptedSubscriptions: EventStore {
             return AsyncThrowingStream { $0.finish() }
         case .fails:
             return AsyncThrowingStream { $0.finish(throwing: Boom()) }
+        case .failsWhenCancelled:
+            return AsyncThrowingStream(unfolding: {
+                try await Task.sleep(for: .seconds(30))
+                return nil
+            })
         case .floods(let events, let terminated):
             return AsyncThrowingStream { continuation in
                 for event in events { continuation.yield(event) }

@@ -393,6 +393,20 @@ private struct FailingSubscriptions: EventStore {
         #expect(reports.value == 1)
     }
 
+    /// A store may fail the subscription with `CancellationError` when stopping cancels it: that is the stop.
+    @Test func aSubscriptionCancelledByStopIsNotAFailureEvenIfItThrows() async throws {
+        let reported = ErrorBox()
+        let running = try await automation(
+            on: ScriptedSubscriptions(script: .failsWhenCancelled),
+            triggers: [.event(Counted.self)],
+            onError: { reported.set($0) }
+        ) { _ in }
+        try await Task.sleep(for: .milliseconds(50))  // for the forwarder to be waiting in the stream
+        running.stop()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(reported.value == nil, "reported \(String(describing: reported.value))")
+    }
+
     @Test func stopMakesItNotRunning() async throws {
         let running = try await automation(on: InMemoryEventStore(), triggers: [.event(Counted.self)]) { _ in }
         #expect(running.isRunning)

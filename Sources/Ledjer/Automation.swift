@@ -99,8 +99,10 @@ public final class Automation: @unchecked Sendable {
             defer { tasks = [] }
             return tasks
         }
-        signals.finish()
+        // Cancel first: elements already buffered in `signals` are still delivered after `finish()`,
+        // and a body that starts then must find itself cancelled.
         toCancel.forEach { $0.cancel() }
+        signals.finish()
     }
 
     deinit { stop() }
