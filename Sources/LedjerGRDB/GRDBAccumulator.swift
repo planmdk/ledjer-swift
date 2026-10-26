@@ -60,8 +60,23 @@ public final class GRDBAccumulator: PersistedAccumulator {
     }
 
     public func commit(_ operations: [GRDBOperation], through position: Position) async throws {
+        try await write(operations, expecting: nil, through: position)
+    }
+
+    /// Fenced: fails with `PersistedAccumulatorConflict`, and writes nothing, if the stored
+    /// checkpoint isn't `checkpoint`. So a stale view, e.g. one whose commit was still stuck
+    /// when it was closed and replaced, can't apply events twice.
+    public func commit(_ operations: [GRDBOperation], after checkpoint: Position?, through position: Position) async throws {
+        try await write(operations, expecting: .some(checkpoint), through: position)
+    }
+
+    private func write(_ operations: [GRDBOperation], expecting fence: Position??, through position: Position) async throws {
         let name = self.name
         try await writer.write { db in
+            if let expected = fence {
+                let stored = try Int.fetchOne(db, sql: "SELECT position FROM ledjer_checkpoint WHERE name = ?", arguments: [name])
+                guard stored == expected else { throw PersistedAccumulatorConflict(expected: expected, actual: stored) }
+            }
             for operation in operations { try operation.run(db) }
             try db.execute(
                 sql: """

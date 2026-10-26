@@ -22,12 +22,43 @@ public protocol PersistedAccumulator: Sendable {
     /// retry the same commit.
     func commit(_ operations: [Operation], through position: Position) async throws
 
+    /// Like `commit(_:through:)`, and what the view actually calls. `checkpoint` is the
+    /// position the view saw committed last, `nil` if none: the position its batch continues from.
+    ///
+    /// An accumulator that can check it should throw `PersistedAccumulatorConflict`, without
+    /// applying anything, if its own position is not `checkpoint`. That fences off a stale view,
+    /// e.g. one that was closed on a timeout while a commit of it was still on its way, from
+    /// applying events that a newer view has handled since. The view doesn't retry a conflict.
+    /// The default calls `commit(_:through:)`.
+    func commit(_ operations: [Operation], after checkpoint: Position?, through position: Position) async throws
+
     /// Called when the view closes, for releasing resources. Does nothing by default.
     func close() async
 }
 
 extension PersistedAccumulator {
+    public func commit(_ operations: [Operation], after checkpoint: Position?, through position: Position) async throws {
+        try await commit(operations, through: position)
+    }
+
     public func close() async {}
+}
+
+/// An accumulator refused a commit because its position is not the one the committing view expected:
+/// another view has committed since.
+public struct PersistedAccumulatorConflict: Error, CustomStringConvertible {
+    public let expected: Position?
+    public let actual: Position?
+
+    public init(expected: Position?, actual: Position?) {
+        self.expected = expected
+        self.actual = actual
+    }
+
+    public var description: String {
+        "Commit conflict: expected the accumulator at \(expected.map(String.init) ?? "nothing"), "
+            + "but it is at \(actual.map(String.init) ?? "nothing")"
+    }
 }
 
 // MARK: - Definition
@@ -200,6 +231,12 @@ public final class PersistedViewHandle<Accumulator: PersistedAccumulator>: Senda
     /// concurrently, shares one shutdown: every call returns once it is done.
     ///
     /// A failure of the final commit doesn't throw: see `failure` and `options.onError`.
+    ///
+    /// If the worker doesn't stop within the timeout, for instance because a commit is stuck,
+    /// `close()` cancels it and returns anyway: it starts no further commit, but one already
+    /// in flight can't be called back. An accumulator that fences its commits (see
+    /// `PersistedAccumulator.commit(_:after:through:)`, `GRDBAccumulator` does) refuses it if a newer
+    /// view has committed in the meantime.
     public func close() async {
         await engine.shutdown()
     }
@@ -312,7 +349,12 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
                 let (inbox, worker, pump) = lock.withLock { (self.inbox, self.worker, self.pump) }
                 // Control lane: the worker takes it before any queued event.
                 inbox?.post(.stop)
-                if let worker { await waitForCompletion(of: worker, timeout: options.closeTimeout) }
+                if let worker {
+                    let finished = await waitForCompletion(of: worker, timeout: options.closeTimeout)
+                    // A worker that is still going must not commit after this: the accumulator is
+                    // about to be closed, and a new view may take over from the checkpoint.
+                    if !finished { worker.cancel() }
+                }
                 pump?.cancel()
                 inbox?.close()
                 await acc.close()
@@ -349,6 +391,8 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
             defer { inbox.close() }
             do {
                 try await work(inbox, startPosition: start)
+            } catch is CancellationError {
+                // Only a shutdown that gave up waiting cancels the worker, and it reports nothing.
             } catch {
                 if state.fail(error) {
                     pump.cancel()
@@ -385,6 +429,7 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
 
         defer { timer?.cancel() }
         while let message = await inbox.receive() {
+            try Task.checkCancellation()
             switch message {
             case .event(let event):
                 do {
@@ -419,12 +464,18 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
     private func commitWithRetries(_ operations: [Accumulator.Operation], through position: Position) async throws {
         var attempt = 1
         var backoff = options.commitBackoff
+        // What this view last saw committed. Only this worker changes it, between commits.
+        let checkpoint = state.committed
         while true {
+            // Never start a commit once the view has given up on its worker.
+            try Task.checkCancellation()
             do {
-                try await acc.commit(operations, through: position)
+                try await acc.commit(operations, after: checkpoint, through: position)
                 return
             } catch {
-                if error is CancellationError || attempt > options.commitRetries {
+                if error is CancellationError { throw error }
+                // A conflict doesn't go away by trying again.
+                if error is PersistedAccumulatorConflict || attempt > options.commitRetries {
                     throw PersistedViewError.commit(position: position, attempts: attempt, underlying: error)
                 }
                 try await Task.sleep(for: backoff)
@@ -435,30 +486,32 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
     }
 }
 
-/// Waits for `task` to finish, but at most `timeout`. The task is left running if it doesn't.
-private func waitForCompletion(of task: Task<Void, Never>, timeout: Duration) async {
+/// Waits for `task` to finish, but at most `timeout`. Returns whether it finished.
+/// The task is left running if it didn't, and so is the waiter on it, until it does.
+private func waitForCompletion(of task: Task<Void, Never>, timeout: Duration) async -> Bool {
+    /// Resumes its continuation with whichever result arrives first.
     final class Once: @unchecked Sendable {
         private let lock = NSLock()
-        private var continuation: CheckedContinuation<Void, Never>?
-        init(_ continuation: CheckedContinuation<Void, Never>) { self.continuation = continuation }
-        func resume() {
-            let pending = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+        private var continuation: CheckedContinuation<Bool, Never>?
+        init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
+        func resume(_ finished: Bool) {
+            let pending = lock.withLock { () -> CheckedContinuation<Bool, Never>? in
                 defer { continuation = nil }
                 return continuation
             }
-            pending?.resume()
+            pending?.resume(returning: finished)
         }
     }
-    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+    return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
         let once = Once(continuation)
         let timer = Task {
             try? await Task.sleep(for: timeout)
-            once.resume()
+            once.resume(false)
         }
         Task {
             await task.value
             timer.cancel()
-            once.resume()
+            once.resume(true)
         }
     }
 }

@@ -119,6 +119,49 @@ private func fast() -> PersistedViewOptions {
         #expect(try await acc.sequenceNumber == nil)
     }
 
+    @Test func aStaleCommitIsFencedOff() async throws {
+        let pool = try makeDatabase()
+        let current = try GRDBAccumulator(name: "balances", writer: pool)
+        let stale = try GRDBAccumulator(name: "balances", writer: pool)  // same view, e.g. from before a restart
+        try await current.commit([adjust("a", by: 1)], after: nil, through: 1)
+
+        do {
+            try await stale.commit([adjust("a", by: 1)], after: nil, through: 1)
+            Issue.record("expected a conflict")
+        } catch let conflict as PersistedAccumulatorConflict {
+            #expect(conflict.expected == nil)
+            #expect(conflict.actual == 1)
+        }
+        #expect(try balance(pool, "a") == 1)  // not applied twice
+
+        try await stale.commit([adjust("a", by: 5)], after: 1, through: 3)
+        #expect(try balance(pool, "a") == 6)
+        #expect(try await current.sequenceNumber == 3)
+    }
+
+    @Test func twoViewsOnOneCheckpointCannotBothApplyAnEvent() async throws {
+        let pool = try makeDatabase()
+        let store = try GRDBEventStore(pool)
+        let first = try await balances.start(on: store, accumulator: GRDBAccumulator(name: "balances", writer: pool), options: fast())
+        let second = try await balances.start(on: store, accumulator: GRDBAccumulator(name: "balances", writer: pool), options: fast())
+        let position = try await store.append([Deposited(account: "a", amount: 10)])
+
+        var failures: [any Error] = []
+        for view in [first, second] {
+            do { try await view.awaitPosition(position) } catch { failures.append(error) }
+        }
+        #expect(failures.count == 1, "one view wins the checkpoint, the other is fenced off")
+        if case PersistedViewError.commit(_, let attempts, let underlying)? = failures.first {
+            #expect(underlying is PersistedAccumulatorConflict)
+            #expect(attempts == 1, "a conflict is not retried")
+        } else {
+            Issue.record("expected a commit failure, got \(failures)")
+        }
+        #expect(try balance(pool, "a") == 10)
+        await first.close()
+        await second.close()
+    }
+
     @Test func worksWithGtOnAnInMemoryStore() async throws {
         let pool = try makeDatabase()
         try await gt(

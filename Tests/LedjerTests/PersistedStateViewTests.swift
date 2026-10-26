@@ -334,6 +334,8 @@ actor SlowAccumulator: PersistedAccumulator {
     private var totals: [String: Int] = [:]
     private(set) var closed = false
     private(set) var commitCount = 0
+    /// How many commits have been started, finished or not.
+    private(set) var commitsEntered = 0
 
     /// With `gated`, commits wait until `openGate()`.
     init(commitDelay: Duration = .zero, closeDelay: Duration = .zero, gated: Bool = false, lastSequence: Position? = nil) {
@@ -348,6 +350,7 @@ actor SlowAccumulator: PersistedAccumulator {
     func total(_ id: String) -> Int { totals[id, default: 0] }
 
     func commit(_ operations: [Add], through position: Position) async throws {
+        commitsEntered += 1
         while !gate { try await Task.sleep(for: .milliseconds(5)) }
         try await Task.sleep(for: commitDelay)
         for op in operations { totals[op.id, default: 0] += op.amount }
@@ -416,6 +419,25 @@ actor SlowAccumulator: PersistedAccumulator {
         #expect(took >= .milliseconds(150) && took < .seconds(2), "close took \(took)")
         #expect(await acc.closed)
         await acc.openGate()  // let the stuck commit finish
+    }
+
+    @Test func aRestartAfterACloseTimeoutAppliesEachEventOnce() async throws {
+        let store = InMemoryEventStore()
+        let acc = SlowAccumulator(gated: true)  // the first view's commit is stuck
+        var options = fastOptions(maxSize: 1)
+        options.closeTimeout = .milliseconds(100)
+        let first = try await totalsView.start(on: store, accumulator: acc, options: options)
+        try await store.append([Counted(id: "a", num: 1)])
+        try await eventually { await acc.commitsEntered == 1 }
+        await first.close()  // gives up waiting for the stuck commit
+
+        let second = try await totalsView.start(on: store, accumulator: acc, options: fastOptions(maxSize: 1))
+        await acc.openGate()
+        try await second.awaitPosition(1)
+        try await Task.sleep(for: .milliseconds(150))  // time for a stale worker to commit, if it could
+        #expect(await acc.total("a") == 1, "the event was applied twice")
+        #expect(await acc.commitCount == 1)
+        await second.close()
     }
 
     @Test func concurrentClosesAllWaitForTheShutdown() async throws {
