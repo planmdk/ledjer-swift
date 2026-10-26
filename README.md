@@ -6,8 +6,9 @@ on-device SQLite event store (GRDB).
 
 | Product       | Contents                                                              | Dependencies |
 |---------------|-----------------------------------------------------------------------|--------------|
-| `Ledjer`      | events, queries, state views, persisted views, automations, `gwt`/`gt`, in-memory store | none |
+| `Ledjer`      | events, queries, state views, persisted views, automations, `gwt`/`gt`, in-memory store | none (but SwiftPM still resolves GRDB, as the package declares it) |
 | `LedjerGRDB`  | `GRDBEventStore`, `GRDBAccumulator`                                   | GRDB 7       |
+| `LedjerStoreContract` | contract checks that any `EventStore` must pass                | none         |
 
 Requires Swift 6.1, iOS 16 / macOS 13.
 
@@ -91,9 +92,12 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
 - **A `CancellationError` thrown by an accumulator is a failure** like any other error. Only a
   cancellation of the view's own worker (a `close()` that gave up waiting) ends it quietly.
 - **Automations** report a throwing body to `onError` and keep running. In Clojure a throwing body
-  silently ends the go-loop. A failing event subscription, or one that ends, is reported and stops the
-  automation (`isRunning`). Periodic and signal ticks coalesce while the body is busy (one more run, not
-  one each), like Clojure's buffer-1 channel; each event of an event trigger is a run. `automation` returns a handle that stops the automation on `stop()` or when dropped.
+  ends the go-loop and the exception goes to the uncaught exception handler. A failing event
+  subscription, or one that ends, is reported and stops the automation (`isRunning`). A `.signal`
+  stream that finishes is not reported: like a closed channel in Clojure, it just never fires again.
+  Periodic and signal ticks coalesce while the body is busy (one more run, not one each), similar to
+  Clojure's buffer-1 channel; each event of an event trigger is a run. `automation` returns a handle that
+  stops the automation on `stop()` or when dropped.
   A `Trigger` is a description that each automation starts itself, so it can be shared;
   `Trigger.signal` takes a stream factory instead of a core.async channel.
 - **Persisted views** keep Clojure's `close()` semantics: stop has priority over queued events, so
@@ -105,7 +109,10 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
   `GRDBAccumulator` throws a non-retried `PersistedAccumulatorConflict` if the stored one differs), so a
   restarted view and a stale one can't both apply an event. (Clojure leaves such a worker running.)
   A retry that finds the accumulator exactly at its position (the first attempt landed, its
-  acknowledgement didn't) counts as done. A custom accumulator should implement the fenced commit if
+  acknowledgement didn't) counts as done. That can't tell the view's own lost commit from another
+  committer's identical one, so two views with *different reducers* must never share a checkpoint name
+  (they'd diverge silently, where a conflict would have been loud). A closed view whose stale commit
+  is refused reports nothing: the new view is the one that carries on. A custom accumulator should implement the fenced commit if
   its commits can outlive a cancelled view: otherwise a stale commit that can't be called back may land
   twice. And if it does land after a new view has started, it is the new view that is refused, and must
   be restarted.
@@ -122,7 +129,9 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
   matches the type's tag-bound bindings, and the view throws "exactly one binding" for it. (Store queries,
   which decide what a view reads at all, require a bound tag to be present.)
 - **`gwt`/`gt`** throw `ScenarioFailure` instead of calling `clojure.test/is`, so they work with
-  XCTest and Swift Testing alike.
+  XCTest and Swift Testing alike. With an empty `then` they assert that nothing was appended (in
+  Clojure such a scenario passes trivially). `gt(view:)` doesn't report failures to `onError` by
+  default, as in Clojure, since it throws them.
 - The types are named `StateView`, `EventTag`, … to stay clear of SwiftUI's `View` and Swift Testing's `Tag`.
 
 ## The GRDB store
@@ -150,40 +159,61 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
 You don't need to do anything special for a database in the app's own container. With a database in a
 shared container (an app group, for a widget or extension) GRDB's `observesSuspensionNotifications`
 makes writes fail with `SQLITE_ABORT` while the app is suspended, so that iOS doesn't kill it for
-holding a lock on the file. A persisted view's commit then fails, and it fails for good after its
-retries: there's no telling how long a suspension lasts, so retrying wouldn't be a fix.
+holding a lock on the file. A persisted view's commit (or, if its reads are suspended too, its
+subscription: `PersistedViewError.subscribe`) then fails, and it fails for good after its retries:
+there's no telling how long a suspension lasts, so retrying wouldn't be a fix. An automation's event
+subscription fails the same way; it is reported to `onError` and the automation stops for good
+(`isRunning == false`), and nothing restarts it.
 
-Stop the views when the app goes to the background and start new ones when it is active again. That is
-cheap and exact: a new view resumes after the accumulator's checkpoint, and events appended meanwhile
-are picked up. Use `beginBackgroundTask` around the `close()` if it needs time to flush.
+Stop the views and automations when the app goes to the background and start new ones when it is
+active again. That is cheap and exact: a new view resumes after the accumulator's checkpoint, and
+events appended meanwhile are picked up. Use `beginBackgroundTask` around the `close()` if it needs
+time to flush.
+
+Starting must wait for the previous stop to finish. Otherwise a quick background → active starts
+the new view while the old one is still flushing, and the two commit against the same checkpoint: one of
+them is fenced off with a `PersistedAccumulatorConflict`, and if it is the new one, it fails.
 
 ```swift
 @MainActor final class Views {
     private var balances: PersistedViewHandle<GRDBAccumulator>?
+    private var reminders: Automation?
+    private var stopping: Task<Void, Never>?
 
     func start() async throws {
+        await stopping?.value  // the previous views are closed before new ones start
         guard balances == nil else { return }
         let accumulator = try await GRDBAccumulator.open(name: "balances", writer: pool)
         var options = PersistedViewOptions()
         options.onError = { [weak self] error in Task { @MainActor in self?.failed(error) } }
         balances = try await readModel.start(on: store, accumulator: accumulator, options: options)
+        reminders = try await automation(
+            on: store, triggers: [.event(ReminderDue.self)],
+            onError: { [weak self] error in Task { @MainActor in self?.failed(error) } }
+        ) { store in /* ... */ }
     }
 
-    func stop() async {
-        let view = balances
+    func stop() {
+        let view = balances, automation = reminders
         balances = nil
-        await view?.close()
+        reminders = nil
+        let previous = stopping
+        stopping = Task {
+            await previous?.value
+            automation?.stop()
+            await view?.close()
+        }
     }
 
-    /// A view that failed anyway: restart it when the app is active.
-    private func failed(_ error: any Error) { /* log it, then `await stop()` and `try await start()` */ }
+    /// A view or automation that failed anyway: restart them when the app is active.
+    private func failed(_ error: any Error) { /* log it, then `stop()` and `try await start()` */ }
 }
 
 // In the App:
 .onChange(of: scenePhase) { phase in  // iOS 17+: { _, phase in
     Task {
         switch phase {
-        case .background: await views.stop()
+        case .background: views.stop()
         case .active: try await views.start()
         default: break
         }
