@@ -1,10 +1,14 @@
 import Foundation
 
 /// Something that makes an automation run.
+///
+/// A trigger is a description, not a running thing: each automation that
+/// uses it starts its own listener, so a trigger can be shared freely.
 public struct Trigger: Sendable {
     enum Kind: Sendable {
         case events(Query)
-        case signal(AsyncStream<Void>)
+        case signal(@Sendable () -> AsyncStream<Void>)
+        case periodic(Duration)
     }
     let kind: Kind
 
@@ -18,24 +22,17 @@ public struct Trigger: Sendable {
         Trigger(kind: .events(try Query(QueryItem([type], where: tagBindings))))
     }
 
-    /// Fires for each element of `stream`, e.g. `Trigger.periodic(every:)`.
-    public static func signal(_ stream: AsyncStream<Void>) -> Trigger {
-        Trigger(kind: .signal(stream))
+    /// Fires for each element of the stream `make` returns. `make` is called
+    /// once per automation that uses the trigger, when the automation starts,
+    /// so it should return a fresh stream each time. A stream that several
+    /// automations share would split its elements between them.
+    public static func signal(_ make: @escaping @Sendable () -> AsyncStream<Void>) -> Trigger {
+        Trigger(kind: .signal(make))
     }
 
-    /// Fires every `interval`, until the automation stops.
+    /// Fires every `interval`, from when the automation starts until it stops.
     public static func periodic(every interval: Duration) -> Trigger {
-        let (stream, continuation) = AsyncStream<Void>.makeStream()
-        let ticker = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: interval)
-                if Task.isCancelled { break }
-                continuation.yield()
-            }
-            continuation.finish()
-        }
-        continuation.onTermination = { _ in ticker.cancel() }
-        return .signal(stream)
+        Trigger(kind: .periodic(interval))
     }
 }
 
@@ -79,9 +76,18 @@ public func automation(
                 forwarders.append(Task {
                     do { for try await _ in stream { fire.yield() } } catch { onError(error) }
                 })
-            case .signal(let stream):
+            case .signal(let make):
+                let stream = make()
                 forwarders.append(Task {
                     for await _ in stream { fire.yield() }
+                })
+            case .periodic(let interval):
+                forwarders.append(Task {
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: interval)
+                        if Task.isCancelled { break }
+                        fire.yield()
+                    }
                 })
             }
         }

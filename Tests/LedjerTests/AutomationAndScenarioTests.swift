@@ -77,10 +77,45 @@ private func reactImmediately(_ store: any EventStore) async throws -> Automatio
         let (signal, continuation) = AsyncStream<Void>.makeStream()
         let running = try await automation(
             on: store,
-            triggers: [.periodic(every: .milliseconds(20)), .signal(signal)]
+            triggers: [.periodic(every: .milliseconds(20)), .signal { signal }]
         ) { _ in runs.increment() }
         continuation.yield()
         try await runs.wait(for: 3)
+        running.stop()
+    }
+
+    @Test func aTriggerCanBeSharedByAutomations() async throws {
+        let store = InMemoryEventStore()
+        let trigger = Trigger.periodic(every: .milliseconds(10))
+        let a = Counter()
+        let b = Counter()
+        let first = try await automation(on: store, triggers: [trigger]) { _ in a.increment() }
+        let second = try await automation(on: store, triggers: [trigger]) { _ in b.increment() }
+        try await a.wait(for: 5)
+        try await b.wait(for: 5)
+
+        // Stopping one doesn't affect the other.
+        first.stop()
+        let before = b.value
+        try await b.wait(for: before + 5)
+        let frozen = a.value
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(a.value <= frozen + 1)  // at most one run that was already underway
+        second.stop()
+
+        // And the trigger is reusable after both have stopped.
+        let c = Counter()
+        let third = try await automation(on: store, triggers: [trigger]) { _ in c.increment() }
+        try await c.wait(for: 3)
+        third.stop()
+    }
+
+    @Test func periodicTicksStartWithTheAutomation() async throws {
+        let trigger = Trigger.periodic(every: .milliseconds(10))
+        try await Task.sleep(for: .milliseconds(200))  // time passes while the trigger exists
+        let runs = Counter()
+        let running = try await automation(on: InMemoryEventStore(), triggers: [trigger]) { _ in runs.increment() }
+        #expect(runs.value <= 1)  // no burst of ticks from before it started
         running.stop()
     }
 
