@@ -196,6 +196,11 @@ final class PersistedViewState: @unchecked Sendable {
     private let lock = NSLock()
     private var _failure: (any Error)?
     private var _closed = false
+    private var _committed: Position?
+
+    /// The position of the last event the accumulator has committed.
+    var committed: Position? { lock.withLock { _committed } }
+    func setCommitted(_ position: Position?) { lock.withLock { _committed = position } }
 
     var failure: (any Error)? { lock.withLock { _failure } }
 
@@ -239,8 +244,7 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
     private let state = PersistedViewState()
 
     private let lock = NSLock()
-    private var startPosition: Position = 0
-    private var inbox: AsyncStream<Message>.Continuation?
+    private var inbox: Inbox<Message>?
     private var worker: Task<Void, Never>?
     private var pump: Task<Void, Never>?
     private var shutdownTask: Task<Void, Never>?
@@ -266,18 +270,18 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
     func awaitPosition(_ position: Position?, timeout: Duration) async throws {
         try state.check()
         guard let position else { return }
-        let committed = try await acc.sequenceNumber
-        let pending = try await store.source(query, startPosition: committed.map { $0 + 1 } ?? 0)
-        guard let target = pending.map(\.position).filter({ $0 <= position }).max() else { return }
+        // The last event the view applies up to `position`: one lookup, without reading events.
+        guard let target = try await store.lastPosition(matching: query, through: position) else { return }
 
+        // The worker records what it commits, so waiting doesn't touch the database.
         let clock = ContinuousClock()
         let deadline = clock.now + timeout
         while true {
             try state.check()
-            let current = try await acc.sequenceNumber
-            if let current, current >= target { return }
+            let committed = state.committed
+            if let committed, committed >= target { return }
             if clock.now > deadline {
-                throw PersistedViewError.awaitTimedOut(position: position, target: target, committed: current)
+                throw PersistedViewError.awaitTimedOut(position: position, target: target, committed: committed)
             }
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -290,10 +294,10 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
             state.markClosed()
             let task = Task { [self] in
                 let (inbox, worker, pump) = lock.withLock { (self.inbox, self.worker, self.pump) }
-                inbox?.yield(.stop)
+                await inbox?.send(.stop)
                 await worker?.value
                 pump?.cancel()
-                inbox?.finish()
+                inbox?.close()
                 await acc.close()
             }
             shutdownTask = task
@@ -313,18 +317,21 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
         } catch {
             throw PersistedViewError.subscribe(startPosition: start, underlying: error)
         }
-        let (messages, inbox) = AsyncStream<Message>.makeStream()
+        state.setCommitted(committed)
+        // Bounded, so that a worker busy committing holds the pump back, which holds back the subscription.
+        let inbox = Inbox<Message>(capacity: options.maxSize)
         let pump = Task.detached {
             do {
-                for try await event in stream { inbox.yield(.event(event)) }
-                inbox.yield(.subscriptionEnded(nil))
+                for try await event in stream { await inbox.send(.event(event)) }
+                await inbox.send(.subscriptionEnded(nil))
             } catch {
-                inbox.yield(.subscriptionEnded(error))
+                await inbox.send(.subscriptionEnded(error))
             }
         }
         let worker = Task { [self] in
+            defer { inbox.close() }
             do {
-                try await work(messages, inbox: inbox, startPosition: start)
+                try await work(inbox, startPosition: start)
             } catch {
                 if state.fail(error) {
                     pump.cancel()
@@ -333,7 +340,6 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
             }
         }
         lock.withLock {
-            self.startPosition = start
             self.inbox = inbox
             self.pump = pump
             self.worker = worker
@@ -342,7 +348,7 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
 
     /// Applies events as they arrive and commits them in batches, until told
     /// to stop or something fails. All batching state is local to this one loop.
-    private func work(_ messages: AsyncStream<Message>, inbox: AsyncStream<Message>.Continuation, startPosition: Position) async throws {
+    private func work(_ inbox: Inbox<Message>, startPosition: Position) async throws {
         var operations: [Accumulator.Operation] = []
         var count = 0
         var lastPosition: Position?
@@ -354,13 +360,14 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
             timer = nil
             guard let position = lastPosition else { return }
             try await commitWithRetries(operations, through: position)
+            state.setCommitted(position)
             operations = []
             count = 0
             lastPosition = nil
         }
 
         defer { timer?.cancel() }
-        for await message in messages {
+        while let message = await inbox.receive() {
             switch message {
             case .event(let event):
                 do {
@@ -378,7 +385,7 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
                     let interval = options.maxInterval
                     timer = Task {
                         try? await Task.sleep(for: interval)
-                        inbox.yield(.flush(generation: current))
+                        inbox.post(.flush(generation: current))
                     }
                 }
             case .flush(let flushed):

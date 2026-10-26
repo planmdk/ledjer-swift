@@ -67,9 +67,19 @@ public protocol EventStore: Sendable {
     /// position of the last appended event, or `nil` if `events` is empty.
     @discardableResult
     func append(_ events: [NewEvent], condition: AppendCondition?) async throws -> Position?
+
+    /// The position of the last event matching `query` at or before `position`, if any.
+    ///
+    /// Stores should implement this without reading the events. The default
+    /// sources them all.
+    func lastPosition(matching query: Query, through position: Position) async throws -> Position?
 }
 
 extension EventStore {
+    public func lastPosition(matching query: Query, through position: Position) async throws -> Position? {
+        try await source(query, startPosition: nil).last { $0.position <= position }?.position
+    }
+
     public func source(_ query: Query) async throws -> [StoredEvent] {
         try await source(query, startPosition: nil)
     }

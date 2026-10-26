@@ -32,6 +32,10 @@ public actor InMemoryEventStore: EventStore {
             .map(\.event)
     }
 
+    public func lastPosition(matching query: Query, through position: Position) async throws -> Position? {
+        entries.last { $0.event.position <= position && query.matches(type: $0.event.type, tags: $0.tags) }?.event.position
+    }
+
     /// Every event from `startPosition` (inclusive) on, whatever its type.
     public func allEvents(startPosition: Position? = nil) -> [StoredEvent] {
         let start = startPosition ?? 0

@@ -111,6 +111,7 @@ public enum StoreContract {
         try await sourceSelectsByTagsOfTheEventsType(makeStore)
         try await metadataRoundTrips(makeStore)
         try await appendConditions(makeStore)
+        try await lastPositions(makeStore)
         try await subscribeFromNow(makeStore)
         try await subscribeWithStartPosition(makeStore)
         try await subscribeTerminationDoesNotDisturbAppends(makeStore)
@@ -278,6 +279,38 @@ public enum StoreContract {
             failed = true
         }
         try check(failed, "empty append evaluates its condition")
+    }
+
+    public static func lastPositions(_ makeStore: StoreFactory) async throws {
+        let store = try await makeStore()
+        let (a, b) = (UUID(), UUID())
+        try await store.append([
+            OrderPlaced(orderId: a),  // 1
+            OrderNoted(orderId: a, note: "x"),  // 2
+            OrderPlaced(orderId: b),  // 3
+            OrderPlaced(orderId: a),  // 4
+        ])
+        func last(_ query: Query, through: Position) async throws -> Position? {
+            try await store.lastPosition(matching: query, through: through)
+        }
+        let placed = try Query.of(OrderPlaced.self)
+        for (through, expected) in [(4, 4), (3, 3), (2, 1), (1, 1), (0, nil), (100, 4)] as [(Int, Int?)] {
+            let got = try await last(placed, through: through)
+            try check(got == expected, "last placed through \(through): \(String(describing: got)), expected \(String(describing: expected))")
+        }
+        let ofA = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(a)])
+        let gotA = try await last(ofA, through: 3)
+        try check(gotA == 1, "tagged: \(String(describing: gotA))")
+        let ofB = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(b)])
+        let gotB = try await last(ofB, through: 4)
+        try check(gotB == 3, "tagged, another: \(String(describing: gotB))")
+        let none = try await last(try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(UUID())]), through: 4)
+        try check(none == nil, "nothing matches: \(String(describing: none))")
+        let union = Query([try QueryItem([OrderNoted.self]), try QueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(b)])])
+        let gotUnion = try await last(union, through: 4)
+        try check(gotUnion == 3, "union: \(String(describing: gotUnion))")
+        let unionEarly = try await last(union, through: 2)
+        try check(unionEarly == 2, "union, earlier: \(String(describing: unionEarly))")
     }
 
     public static func subscribeFromNow(_ makeStore: StoreFactory) async throws {

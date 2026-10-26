@@ -129,3 +129,76 @@ private func fast() -> PersistedViewOptions {
         )
     }
 }
+
+/// Counts the statements that read events, to see how much of the log a subscription reads.
+private final class EventReads: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _count = 0
+    var count: Int { lock.withLock { _count } }
+    func record(_ sql: String) {
+        if sql.contains("SELECT e.position, e.type, e.metadata, e.payload") { lock.withLock { _count += 1 } }
+    }
+}
+
+private func countingQueue(_ reads: EventReads) throws -> DatabaseQueue {
+    var configuration = Configuration()
+    configuration.prepareDatabase { db in db.trace { reads.record($0.expandedDescription) } }
+    return try DatabaseQueue(configuration: configuration)
+}
+
+/// An accumulator whose commits wait until it is opened.
+private actor GatedAccumulator: PersistedAccumulator {
+    typealias Operation = Int
+    private var open = false
+    private var sequence: Position?
+    private(set) var applied = 0
+    func openGate() { open = true }
+    var sequenceNumber: Position? { sequence }
+    func commit(_ operations: [Int], through position: Position) async throws {
+        while !open { try await Task.sleep(for: .milliseconds(5)) }
+        applied += operations.count
+        sequence = position
+    }
+}
+
+@Suite struct GRDBBackpressureTests {
+    @Test func aSubscriptionReadsTheLogOnlyAsFastAsItIsConsumed() async throws {
+        let reads = EventReads()
+        let queue = try countingQueue(reads)
+        let store = try GRDBEventStore(queue)
+        try await store.append((0..<3000).map { Deposited(account: "a", amount: $0) })
+
+        let stream = try await store.subscribe(Query.of(Deposited.self), startPosition: 0)
+        var iterator = stream.makeAsyncIterator()
+        for _ in 0..<10 { _ = try await iterator.next() }
+        #expect(reads.count == 1, "10 events asked for, one batch of 500 read: \(reads.count)")
+
+        var seen = 10
+        while seen < 3000, try await iterator.next() != nil { seen += 1 }
+        #expect(seen == 3000)
+        #expect(reads.count == 6)  // 3000 events in batches of 500
+    }
+
+    @Test func aSlowCommitHoldsBackTheReadsOfAPersistedView() async throws {
+        let reads = EventReads()
+        let queue = try countingQueue(reads)
+        let store = try GRDBEventStore(queue)
+        try await store.append((0..<5000).map { Deposited(account: "a", amount: $0) })
+
+        let acc = GatedAccumulator()
+        let view = PersistedStateView<Int>(bindings: [.on(Deposited.self) { [$0.amount] }])
+        var options = PersistedViewOptions()
+        options.maxSize = 10
+        options.maxInterval = .milliseconds(10)
+        let running = try await view.start(on: store, accumulator: acc, options: options)
+
+        // The first commit is stuck, so the worker, the inbox and the pump fill up and stop reading.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(reads.count <= 2, "reads while the commit is stuck: \(reads.count) (10 batches without backpressure)")
+
+        await acc.openGate()
+        try await running.awaitPosition(5000, timeout: .seconds(20))
+        #expect(await acc.applied == 5000)
+        await running.close()
+    }
+}

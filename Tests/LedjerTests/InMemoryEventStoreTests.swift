@@ -10,6 +10,7 @@ import Testing
     @Test func sourceSelectsByTags() async throws { try await StoreContract.sourceSelectsByTagsOfTheEventsType(Self.make) }
     @Test func metadataRoundTrips() async throws { try await StoreContract.metadataRoundTrips(Self.make) }
     @Test func appendConditions() async throws { try await StoreContract.appendConditions(Self.make) }
+    @Test func lastPositions() async throws { try await StoreContract.lastPositions(Self.make) }
     @Test func subscribeFromNow() async throws { try await StoreContract.subscribeFromNow(Self.make) }
     @Test func subscribeWithStartPosition() async throws { try await StoreContract.subscribeWithStartPosition(Self.make) }
     @Test func subscribeTermination() async throws {

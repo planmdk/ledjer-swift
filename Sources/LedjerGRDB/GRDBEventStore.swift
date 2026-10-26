@@ -84,6 +84,15 @@ public final class GRDBEventStore: EventStore {
         }
     }
 
+    public func lastPosition(matching query: Query, through position: Position) async throws -> Position? {
+        try await writer.read { db in
+            guard let (positions, arguments) = Self.positionsSQL(
+                for: query, after: 0, upTo: position, limit: 1, descending: true)
+            else { return nil }
+            return try Int.fetchOne(db, sql: "SELECT MAX(position) FROM (\(positions))", arguments: arguments)
+        }
+    }
+
     public func subscribe(
         _ query: Query,
         startPosition: Position?
@@ -96,43 +105,72 @@ public final class GRDBEventStore: EventStore {
         } else {
             initiallyDelivered = try await writer.read(Self.head)
         }
-        let writer = self.writer
-        let batchSize = Self.batchSize
+        let subscription = Subscription(
+            writer: writer, query: query, batchSize: Self.batchSize, delivered: initiallyDelivered)
+        // Pull-based: events are read from the database only as the consumer asks for them,
+        // so a slow consumer slows the reads down instead of piling events up in memory.
+        return AsyncThrowingStream(unfolding: { try await subscription.next() })
+    }
 
-        return AsyncThrowingStream { continuation in
-            let task = Task {
-                var delivered = initiallyDelivered
-                do {
-                    // Emits the head position now, and again after every change to the log.
-                    let heads = ValueObservation.tracking(Self.head).values(in: writer)
-                    for try await head in heads {
-                        while delivered < head {
-                            let after = delivered
-                            let batch = try await writer.read { db in
-                                try Self.fetch(db, query, after: after, upTo: head, limit: batchSize)
-                            }
-                            for event in batch { continuation.yield(event) }
-                            // A short batch means everything up to `head` has been seen.
-                            delivered = batch.count < batchSize ? head : (batch.last?.position ?? head)
-                        }
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
+    /// The state of one subscription. A stream's `next` is only ever called one at a time, so no locking.
+    private final class Subscription: @unchecked Sendable {
+        let writer: any DatabaseWriter
+        let query: Query
+        let batchSize: Int
+        /// Events up to here have been read from the database.
+        var delivered: Position
+        /// The newest head position seen. Events up to here can be read.
+        var knownHead: Position
+        var buffer: [StoredEvent] = []
+        var bufferIndex = 0
+        var heads: AsyncValueObservation<Position>.AsyncIterator?
+
+        init(writer: any DatabaseWriter, query: Query, batchSize: Int, delivered: Position) {
+            self.writer = writer
+            self.query = query
+            self.batchSize = batchSize
+            self.delivered = delivered
+            self.knownHead = delivered
+        }
+
+        func next() async throws -> StoredEvent? {
+            while true {
+                if bufferIndex < buffer.count {
+                    defer { bufferIndex += 1 }
+                    return buffer[bufferIndex]
                 }
+                if delivered < knownHead {
+                    let (after, upTo, limit, query) = (delivered, knownHead, batchSize, query)
+                    let batch = try await writer.read { db in
+                        try GRDBEventStore.fetch(db, query, after: after, upTo: upTo, limit: limit)
+                    }
+                    // A short batch means everything up to `upTo` has been seen.
+                    delivered = batch.count < limit ? upTo : (batch.last?.position ?? upTo)
+                    buffer = batch
+                    bufferIndex = 0
+                    continue
+                }
+                // Caught up: wait for the log to change. The observation emits the head
+                // position when it starts, and again after every change.
+                if heads == nil {
+                    heads = ValueObservation.tracking(GRDBEventStore.head)
+                        .values(in: writer, bufferingPolicy: .bufferingNewest(1))
+                        .makeAsyncIterator()
+                }
+                guard let head = try await heads?.next() else { return nil }
+                knownHead = max(knownHead, head)
             }
-            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
     // MARK: SQL
 
-    private static func head(_ db: Database) throws -> Position {
+    fileprivate static func head(_ db: Database) throws -> Position {
         try Int.fetchOne(db, sql: "SELECT COALESCE(MAX(position), 0) FROM ledjer_event") ?? 0
     }
 
     /// The events matching `query` at positions in `(after, upTo]`, in order.
-    private static func fetch(
+    fileprivate static func fetch(
         _ db: Database,
         _ query: Query,
         after: Position,
@@ -171,7 +209,8 @@ public final class GRDBEventStore: EventStore {
         for query: Query,
         after: Position,
         upTo: Position?,
-        limit: Int?
+        limit: Int?,
+        descending: Bool = false
     ) -> (sql: String, arguments: StatementArguments)? {
         let selectors = query.selectors.sorted {
             ($0.type.rawValue, $0.required.count) < ($1.type.rawValue, $1.required.count)
@@ -186,6 +225,7 @@ public final class GRDBEventStore: EventStore {
             }
             return " AND \(column) > ?"
         }
+        let direction = descending ? " DESC" : ""
         let branches = selectors.map { selector -> String in
             let tags = selector.required.sorted { $0.key.description < $1.key.description }
             var sql: String
@@ -200,12 +240,12 @@ public final class GRDBEventStore: EventStore {
                     sql += " AND EXISTS (SELECT 1 FROM ledjer_event_tag \(t) WHERE \(t).position = t0.position AND \(t).name = ? AND \(t).value = ?)"
                     arguments += [path.description, value.encoded]
                 }
-                sql += " ORDER BY t0.position"
+                sql += " ORDER BY t0.position\(direction)"
             } else {
                 sql = "SELECT e.position AS position FROM ledjer_event e WHERE e.type = ?"
                 arguments += [selector.type.rawValue]
                 sql += bounds("e.position")
-                sql += " ORDER BY e.position"
+                sql += " ORDER BY e.position\(direction)"
             }
             if let limit {
                 sql += " LIMIT ?"
