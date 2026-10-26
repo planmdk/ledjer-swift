@@ -133,7 +133,17 @@ public final class GRDBEventStore: EventStore {
             self.knownHead = delivered
         }
 
+        /// The next event, or `nil` when the consumer has been cancelled, as with the in-memory
+        /// store: cancelling ends the stream, wherever the cancellation lands, and isn't an error.
         func next() async throws -> StoredEvent? {
+            do {
+                return try await nextEvent()
+            } catch is CancellationError where Task.isCancelled {
+                return nil
+            }
+        }
+
+        private func nextEvent() async throws -> StoredEvent? {
             while true {
                 if bufferIndex < buffer.count {
                     defer { bufferIndex += 1 }
