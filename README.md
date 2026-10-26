@@ -87,8 +87,9 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
   things cleanly: no `CancellationError` reaches `onError`, and a cancelled GRDB subscription finishes like
   an in-memory one.
 - **Failures are not silent by default.** `onError` of persisted views and automations defaults to
-  `ErrorReporter.standardError` (Clojure's failures end in the uncaught exception handler, which prints
-  them). Pass your own handler, or `nil` to a persisted view's options.
+  `ErrorReporter.default` (Clojure's failures end in the uncaught exception handler, which prints
+  them): `os.Logger` on Apple platforms, where stderr doesn't reach the logs of a shipped app, standard
+  error elsewhere. Pass your own handler, or `nil` to a persisted view's options.
 - **A `CancellationError` thrown by an accumulator is a failure** like any other error. Only a
   cancellation of the view's own worker (a `close()` that gave up waiting) ends it quietly.
 - **Automations** report a throwing body to `onError` and keep running. In Clojure a throwing body

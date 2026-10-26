@@ -107,8 +107,8 @@ public struct PersistedViewOptions: Sendable {
     public var closeTimeout: Duration = .seconds(5)
     /// Called once, after the view has stopped on a failure. The failure is
     /// also thrown by `accumulator()` and `awaitPosition`, and available as `failure`.
-    /// By default it is written to standard error (`ErrorReporter.standardError`); `nil` silences it.
-    public var onError: (@Sendable (any Error) -> Void)? = ErrorReporter.standardError
+    /// By default it is logged (`ErrorReporter.default`); `nil` silences it.
+    public var onError: (@Sendable (any Error) -> Void)? = ErrorReporter.default
 
     public init() {}
 }

@@ -1,14 +1,36 @@
 import Foundation
+#if canImport(os)
+import os
+#endif
 
 /// Ready-made `onError` handlers.
 public enum ErrorReporter {
-    /// Writes `ledjer: <error>` to standard error.
+    /// The default `onError` of persisted views and automations: a failure is never silent by default.
     ///
-    /// The default `onError` of persisted views and automations. In Clojure the equivalent failures
-    /// end in the thread's uncaught exception handler, which prints them, so a failure is never silent
-    /// by default. Pass your own handler to log elsewhere (a restart is a good thing for it to
-    /// trigger), or `nil` to a persisted view's options to silence it.
+    /// In Clojure the equivalent failures end in the thread's uncaught exception handler, which prints
+    /// them. Here that is the unified log (`os.Logger`, subsystem `dk.planm.ledjer`, error level) on
+    /// Apple platforms, where standard error doesn't reach the device logs of a shipped app, and
+    /// `standardError` elsewhere. Pass your own handler to log somewhere else (a restart is a good
+    /// thing for it to trigger), or `nil` to a persisted view's options to silence it.
+    public static let `default`: @Sendable (any Error) -> Void = {
+        #if canImport(os)
+        let logger = Logger(subsystem: "dk.planm.ledjer", category: "errors")
+        return { error in
+            logger.error("ledjer: \(String(describing: error), privacy: .public)")
+        }
+        #else
+        return standardError
+        #endif
+    }()
+
+    /// Writes `ledjer: <error>` to standard error.
     public static let standardError: @Sendable (any Error) -> Void = { error in
-        FileHandle.standardError.write(Data("ledjer: \(error)\n".utf8))
+        write(error, to: .standardError)
+    }
+
+    /// `FileHandle.write(_: Data)` raises an Objective-C exception, which Swift can't catch, when the
+    /// write fails (a closed descriptor, a broken pipe). Reporting an error must not crash the app.
+    static func write(_ error: any Error, to handle: FileHandle) {
+        try? handle.write(contentsOf: Data("ledjer: \(error)\n".utf8))
     }
 }

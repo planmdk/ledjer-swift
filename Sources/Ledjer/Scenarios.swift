@@ -153,6 +153,7 @@ public func gt<A: PersistedAccumulator>(
     options: PersistedViewOptions = {
         var options = PersistedViewOptions()
         options.maxInterval = .milliseconds(10)
+        options.onError = nil  // a failure is thrown by `awaitPosition`, not also reported (as in Clojure)
         return options
     }(),
     given: [any Event] = [],
