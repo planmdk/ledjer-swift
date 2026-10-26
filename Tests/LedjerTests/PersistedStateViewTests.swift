@@ -668,3 +668,74 @@ actor CancelsOnItsOwn: PersistedAccumulator {
         await view.close()
     }
 }
+
+struct LostAck: Error {}
+
+/// An accumulator that fences its commits, like GRDBAccumulator: a commit that doesn't continue from its
+/// own position is refused. Can apply a commit and then fail to say so, and can hold a commit
+/// up in a way that cancellation can't reach, like a database write that has already begun.
+actor FencedAccumulator: PersistedAccumulator {
+    typealias Operation = Add
+    private var sequence: Position?
+    private var totals: [String: Int] = [:]
+    private var loseAcknowledgement: Bool
+    private var gated: Bool
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private(set) var attempts = 0
+    private(set) var applied = 0
+
+    init(loseAcknowledgementOnce: Bool = false, gated: Bool = false, lastSequence: Position? = nil) {
+        self.loseAcknowledgement = loseAcknowledgementOnce
+        self.gated = gated
+        self.sequence = lastSequence
+    }
+
+    var sequenceNumber: Position? { sequence }
+    func total(_ id: String) -> Int { totals[id, default: 0] }
+
+    /// Lets the held-up commits go on.
+    func openGate() {
+        gated = false
+        waiting.forEach { $0.resume() }
+        waiting = []
+    }
+
+    func commit(_ operations: [Add], through position: Position) async throws {
+        Issue.record("the view must use the fenced commit")
+    }
+
+    func commit(_ operations: [Add], after checkpoint: Position?, through position: Position) async throws {
+        attempts += 1
+        if gated {
+            // Not cancellable: it waits for the gate, however cancelled the task is.
+            await withCheckedContinuation { waiting.append($0) }
+        }
+        guard sequence == checkpoint else { throw PersistedAccumulatorConflict(expected: checkpoint, actual: sequence) }
+        for op in operations { totals[op.id, default: 0] += op.amount }
+        sequence = position
+        applied += 1
+        if loseAcknowledgement {
+            loseAcknowledgement = false
+            throw LostAck()
+        }
+    }
+}
+
+@Suite struct PersistedViewFencingTests {
+    @Test func aCommitThatLandedButWasNotAcknowledgedIsNotAConflictWithItself() async throws {
+        let store = InMemoryEventStore()
+        let acc = FencedAccumulator(loseAcknowledgementOnce: true)
+        let view = try await totalsView.start(on: store, accumulator: acc, options: fastOptions())
+        let position = try await store.append([Counted(id: "a", num: 4)])
+        try await view.awaitPosition(position)
+        #expect(await acc.attempts == 2, "the failed commit was retried")
+        #expect(await acc.total("a") == 4, "and its operations were applied once")
+        #expect(view.failure == nil)
+
+        // The view carries on from where the accumulator is.
+        let more = try await store.append([Counted(id: "a", num: 1)])
+        try await view.awaitPosition(more)
+        #expect(await acc.total("a") == 5)
+        await view.close()
+    }
+}

@@ -28,8 +28,11 @@ public protocol PersistedAccumulator: Sendable {
     /// An accumulator that can check it should throw `PersistedAccumulatorConflict`, without
     /// applying anything, if its own position is not `checkpoint`. That fences off a stale view,
     /// e.g. one that was closed on a timeout while a commit of it was still on its way, from
-    /// applying events that a newer view has handled since. The view doesn't retry a conflict.
-    /// The default calls `commit(_:through:)`.
+    /// applying events that a newer view has handled since. The view doesn't retry a conflict, with
+    /// one exception: if a *retry* of a commit that failed finds the accumulator at exactly `position`,
+    /// the view takes it that the failed attempt did land and only its acknowledgement was lost, and
+    /// treats the commit as done. (So an accumulator may report such a conflict, with `actual: position`,
+    /// instead of applying a batch twice.) The default calls `commit(_:through:)`.
     func commit(_ operations: [Operation], after checkpoint: Position?, through position: Position) async throws
 
     /// Called when the view closes, for releasing resources. Does nothing by default.
@@ -477,7 +480,13 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
                 // Our own cancellation ends the view quietly. A CancellationError that the accumulator
                 // throws for its own reasons doesn't: it is a failed commit like any other.
                 if error is CancellationError, Task.isCancelled { throw error }
-                // A conflict doesn't go away by trying again.
+                // A retry that finds the accumulator exactly at `position` means that an earlier attempt
+                // did land, and only its acknowledgement was lost: the commit is done, not in conflict
+                // with itself.
+                if attempt > 1, let conflict = error as? PersistedAccumulatorConflict, conflict.actual == position {
+                    return
+                }
+                // Any other conflict doesn't go away by trying again.
                 if error is PersistedAccumulatorConflict || attempt > options.commitRetries {
                     throw PersistedViewError.commit(position: position, attempts: attempt, underlying: error)
                 }
