@@ -53,6 +53,7 @@ let readModel = PersistedStateView<GRDBOperation>(bindings: [
     .on(Deposited.self) { e in [GRDBOperation { db in /* upsert row */ }] },
 ])
 let view = try await readModel.start(on: store, accumulator: GRDBAccumulator(name: "balances", writer: dbPool))
+// ... and `await view.close()` when done (a dropped handle shuts the view down too)
 ```
 
 Tests, in any framework:
@@ -81,9 +82,25 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
   on the accumulator, and `commit(_:through:)` receives the batch. A failed commit is retried with the
   same batch. `-reset` is not ported (nothing calls it); see `GRDBAccumulator.clearCheckpoint`.
 - **Automations** report a throwing body to `onError` and keep running. In Clojure a throwing body
-  silently ends the go-loop. `automation` returns a handle to `stop()`.
-- **Subscriptions** are `AsyncThrowingStream`s. Ending the iteration cancels them. Buffers are
-  unbounded, so a very large replay is held in memory until consumed.
+  silently ends the go-loop. A failing event subscription is reported and stops the automation
+  (`isRunning`). `automation` returns a handle that stops the automation on `stop()` or when dropped.
+  A `Trigger` is a description that each automation starts itself, so it can be shared;
+  `Trigger.signal` takes a stream factory instead of a core.async channel.
+- **Persisted views** keep Clojure's `close()` semantics: stop has priority over queued events, so
+  closing commits only what was already applied (the rest is left for the next run, which resumes
+  after the checkpoint), waits for the worker at most `closeTimeout` (5 s), and then closes the accumulator.
+  Concurrent closes share one shutdown. A view whose handle is dropped shuts itself down. After
+  `close()`, `awaitPosition` and `accumulator()` throw `PersistedViewError.closed`; a failure of the
+  final commit doesn't throw from `close()`, see `handle.failure` and `options.onError`.
+- **Subscriptions** are `AsyncThrowingStream`s. Ending the iteration cancels them. The GRDB store reads
+  the log as the consumer pulls (batches of 500), and a persisted view feeds its worker through a
+  bounded queue, so a slow commit slows the reads down. The in-memory store pushes: it keeps every
+  event in memory anyway.
+- **View routing is Clojure's `has-bindings?`**: to pick the one binding for an event, a bound tag that
+  the event doesn't have is ignored, and only a different value rules a binding out. The consequence is
+  the same as in Clojure: an event without a tag, selected through an untagged binding of its type, also
+  matches the type's tag-bound bindings, and the view throws "exactly one binding" for it. (Store queries,
+  which decide what a view reads at all, require a bound tag to be present.)
 - **`gwt`/`gt`** throw `ScenarioFailure` instead of calling `clojure.test/is`, so they work with
   XCTest and Swift Testing alike.
 - The types are named `StateView`, `EventTag`, … to stay clear of SwiftUI's `View` and Swift Testing's `Tag`.
@@ -91,10 +108,16 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
 ## The GRDB store
 
 - Tables are `ledjer_event`, `ledjer_event_tag` (indexed `(name, value, position)`) and `ledjer_checkpoint`,
-  so they can share a database with the app's read models. Run the schema through your own
-  `DatabaseMigrator` with `GRDBEventStore.registerMigrations(in:)`, or let `init` do it.
-- The log is append-only: triggers abort `UPDATE` and `DELETE` on `ledjer_event`.
+  so they can share a database with the app's read models. Creating a `GRDBEventStore` or a
+  `GRDBAccumulator` applies the schema migrations (in any order, idempotently). If your app has its own
+  `DatabaseMigrator`, register them there too with `GRDBEventStore.registerMigrations(in:)`, which is
+  required with `eraseDatabaseOnSchemaChange`, or GRDB would see the tables as unknown schema and erase them.
+  `GRDBEventStore.open(_:)` and `GRDBAccumulator.open(name:writer:)` do this off the calling thread.
+- The log is append-only: triggers abort `UPDATE` and `DELETE` on `ledjer_event` and `ledjer_event_tag`.
 - An append and its condition check run in one write transaction.
+- Queries are driven by the tag index: each selector is a range scan over `(name, value, position)` (or
+  `(type, position)` without tags), so the cost follows the number of matching events, not the length of
+  the log. The tests check the query plans of the SQL the store really generates.
 - `GRDBAccumulator` commits a batch of read-model writes and its checkpoint in one transaction.
   To rebuild a read model, empty its tables and call `GRDBAccumulator.clearCheckpoint(named:in:)` in a migration.
 - Subscriptions use `ValueObservation`, which sees writes made through the same `DatabaseWriter`
@@ -105,7 +128,8 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
 ## Testing
 
 `LedjerStoreContract` holds framework-agnostic contract checks that any `EventStore` must pass;
-the in-memory and GRDB stores both run them.
+the in-memory and GRDB stores both run them. `EventStore.lastPosition(matching:through:)` has a default
+implementation that reads the events; stores should override it (the GRDB store does, with one index lookup).
 
 No Swift toolchain on the machine? `./swift.sh test` runs `swift test` in a container
 (`swift:6.1` + `libsqlite3-dev`, via podman).
