@@ -130,15 +130,15 @@ public struct PersistedStateView<Operation: Sendable>: Sendable {
         options: PersistedViewOptions = .init()
     ) async throws -> PersistedViewHandle<A> where A.Operation == Operation {
         let query = try query(for: bindings.map(\.selector))
-        let handle = PersistedViewHandle(
+        let engine = PersistedViewEngine(
             store: store,
             routes: bindings.map { (selector: $0.selector, handler: $0.apply) },
             query: query,
             accumulator: accumulator,
             options: options
         )
-        try await handle.begin()
-        return handle
+        try await engine.begin()
+        return PersistedViewHandle(engine)
     }
 }
 
@@ -148,10 +148,66 @@ public struct PersistedStateView<Operation: Sendable>: Sendable {
 /// Once failed, `accumulator()` and `awaitPosition` throw the failure. Recover
 /// by closing the view and starting a new one, which resumes after the
 /// accumulator's last committed position.
-public actor PersistedViewHandle<Accumulator: PersistedAccumulator> {
+///
+/// Call `close()` when done. A handle that is dropped without being closed
+/// shuts the view down in the background.
+public final class PersistedViewHandle<Accumulator: PersistedAccumulator>: Sendable {
+    private let engine: PersistedViewEngine<Accumulator>
+
+    init(_ engine: PersistedViewEngine<Accumulator>) {
+        self.engine = engine
+    }
+
+    deinit {
+        // The engine doesn't reference the handle, so it can outlive it for as long as this takes.
+        let engine = self.engine
+        Task { await engine.shutdown() }
+    }
+
+    /// The accumulator. Throws the view's failure if it has failed.
+    public func accumulator() throws -> Accumulator {
+        try engine.accumulator()
+    }
+
+    /// Waits until the view has committed every event it applies up to and
+    /// including `position`, e.g. as returned by `append`. Returns immediately
+    /// if `position` is `nil` or no such event applies to the view.
+    ///
+    /// Throws the view's failure, or `PersistedViewError.awaitTimedOut`.
+    public func awaitPosition(_ position: Position?, timeout: Duration = .seconds(1)) async throws {
+        try await engine.awaitPosition(position, timeout: timeout)
+    }
+
+    /// Flushes the uncommitted events, stops the view and closes the
+    /// accumulator. Closing more than once does nothing.
+    public func close() async {
+        await engine.shutdown()
+    }
+}
+
+/// What the worker task writes and the handle reads.
+final class PersistedViewState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _failure: (any Error)?
+
+    var failure: (any Error)? { lock.withLock { _failure } }
+
+    /// Records the first failure. Returns whether this was it.
+    func fail(_ error: any Error) -> Bool {
+        lock.withLock {
+            guard _failure == nil else { return false }
+            _failure = error
+            return true
+        }
+    }
+}
+
+/// The machinery of a running persisted view. Tasks capture the engine and
+/// never the handle, so dropping the handle can shut the view down.
+final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked Sendable {
     typealias Route = (selector: EventSelector, handler: @Sendable (StoredEvent) throws -> [Accumulator.Operation])
 
-    private enum Message: Sendable {
+    enum Message: Sendable {
         case event(StoredEvent)
         case flush(generation: Int)
         case subscriptionEnded((any Error)?)
@@ -163,13 +219,14 @@ public actor PersistedViewHandle<Accumulator: PersistedAccumulator> {
     private let query: Query
     private let acc: Accumulator
     private let options: PersistedViewOptions
+    private let state = PersistedViewState()
 
-    private var failure: (any Error)?
-    private var closed = false
+    private let lock = NSLock()
     private var startPosition: Position = 0
     private var inbox: AsyncStream<Message>.Continuation?
     private var worker: Task<Void, Never>?
     private var pump: Task<Void, Never>?
+    private var shutdownTask: Task<Void, Never>?
 
     init(store: any EventStore, routes: [Route], query: Query, accumulator: Accumulator, options: PersistedViewOptions) {
         self.store = store
@@ -179,20 +236,14 @@ public actor PersistedViewHandle<Accumulator: PersistedAccumulator> {
         self.options = options
     }
 
-    // MARK: Public
+    // MARK: Handle operations
 
-    /// The accumulator. Throws the view's failure if it has failed.
-    public func accumulator() throws -> Accumulator {
-        if let failure { throw failure }
+    func accumulator() throws -> Accumulator {
+        if let failure = state.failure { throw failure }
         return acc
     }
 
-    /// Waits until the view has committed every event it applies up to and
-    /// including `position`, e.g. as returned by `append`. Returns immediately
-    /// if `position` is `nil` or no such event applies to the view.
-    ///
-    /// Throws the view's failure, or `PersistedViewError.awaitTimedOut`.
-    public func awaitPosition(_ position: Position?, timeout: Duration = .seconds(1)) async throws {
+    func awaitPosition(_ position: Position?, timeout: Duration) async throws {
         guard let position else { return }
         let committed = try await acc.sequenceNumber
         let pending = try await store.source(query, startPosition: committed.map { $0 + 1 } ?? 0)
@@ -201,7 +252,7 @@ public actor PersistedViewHandle<Accumulator: PersistedAccumulator> {
         let clock = ContinuousClock()
         let deadline = clock.now + timeout
         while true {
-            if let failure { throw failure }
+            if let failure = state.failure { throw failure }
             let current = try await acc.sequenceNumber
             if let current, current >= target { return }
             if clock.now > deadline {
@@ -211,24 +262,29 @@ public actor PersistedViewHandle<Accumulator: PersistedAccumulator> {
         }
     }
 
-    /// Flushes the uncommitted events, stops the view and closes the
-    /// accumulator. Closing more than once does nothing.
-    public func close() async {
-        guard !closed else { return }
-        closed = true
-        inbox?.yield(.stop)
-        await worker?.value
-        pump?.cancel()
-        inbox?.finish()
-        await acc.close()
+    /// Stops the view and closes the accumulator, once, however often it is called.
+    func shutdown() async {
+        let task: Task<Void, Never> = lock.withLock {
+            if let shutdownTask { return shutdownTask }
+            let task = Task { [self] in
+                let (inbox, worker, pump) = lock.withLock { (self.inbox, self.worker, self.pump) }
+                inbox?.yield(.stop)
+                await worker?.value
+                pump?.cancel()
+                inbox?.finish()
+                await acc.close()
+            }
+            shutdownTask = task
+            return task
+        }
+        await task.value
     }
 
-    // MARK: Internals
+    // MARK: Running
 
     func begin() async throws {
         let committed = try await acc.sequenceNumber
         let start = committed.map { $0 + 1 } ?? 0
-        startPosition = start
         let stream: AsyncThrowingStream<StoredEvent, any Error>
         do {
             stream = try await store.subscribe(query, startPosition: start)
@@ -236,8 +292,7 @@ public actor PersistedViewHandle<Accumulator: PersistedAccumulator> {
             throw PersistedViewError.subscribe(startPosition: start, underlying: error)
         }
         let (messages, inbox) = AsyncStream<Message>.makeStream()
-        self.inbox = inbox
-        pump = Task.detached {
+        let pump = Task.detached {
             do {
                 for try await event in stream { inbox.yield(.event(event)) }
                 inbox.yield(.subscriptionEnded(nil))
@@ -245,25 +300,27 @@ public actor PersistedViewHandle<Accumulator: PersistedAccumulator> {
                 inbox.yield(.subscriptionEnded(error))
             }
         }
-        worker = Task {
+        let worker = Task { [self] in
             do {
-                try await self.work(messages, inbox: inbox)
+                try await work(messages, inbox: inbox, startPosition: start)
             } catch {
-                self.fail(error)
+                if state.fail(error) {
+                    pump.cancel()
+                    options.onError?(error)
+                }
             }
         }
-    }
-
-    private func fail(_ error: any Error) {
-        guard failure == nil else { return }
-        failure = error
-        pump?.cancel()
-        options.onError?(error)
+        lock.withLock {
+            self.startPosition = start
+            self.inbox = inbox
+            self.pump = pump
+            self.worker = worker
+        }
     }
 
     /// Applies events as they arrive and commits them in batches, until told
     /// to stop or something fails. All batching state is local to this one loop.
-    private nonisolated func work(_ messages: AsyncStream<Message>, inbox: AsyncStream<Message>.Continuation) async throws {
+    private func work(_ messages: AsyncStream<Message>, inbox: AsyncStream<Message>.Continuation, startPosition: Position) async throws {
         var operations: [Accumulator.Operation] = []
         var count = 0
         var lastPosition: Position?
@@ -305,7 +362,7 @@ public actor PersistedViewHandle<Accumulator: PersistedAccumulator> {
             case .flush(let flushed):
                 if timer != nil, flushed == generation { try await commit() }
             case .subscriptionEnded(let error):
-                throw PersistedViewError.subscribe(startPosition: await startPosition, underlying: error)
+                throw PersistedViewError.subscribe(startPosition: startPosition, underlying: error)
             case .stop:
                 try await commit()
                 return
@@ -313,7 +370,7 @@ public actor PersistedViewHandle<Accumulator: PersistedAccumulator> {
         }
     }
 
-    private nonisolated func commitWithRetries(_ operations: [Accumulator.Operation], through position: Position) async throws {
+    private func commitWithRetries(_ operations: [Accumulator.Operation], through position: Position) async throws {
         var attempt = 1
         var backoff = options.commitBackoff
         while true {

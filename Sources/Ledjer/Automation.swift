@@ -36,7 +36,8 @@ public struct Trigger: Sendable {
     }
 }
 
-/// A running automation. It runs until stopped, so keep the handle and call `stop()`.
+/// A running automation. Keep the handle for as long as it should run: it stops
+/// when stopped with `stop()`, or when the handle is dropped.
 public final class Automation: Sendable {
     private let tasks: [Task<Void, Never>]
     private let signals: AsyncStream<Void>.Continuation
@@ -51,6 +52,8 @@ public final class Automation: Sendable {
         signals.finish()
         tasks.forEach { $0.cancel() }
     }
+
+    deinit { stop() }
 }
 
 /// Starts an automation: whenever a trigger fires, `body` runs with the event store.

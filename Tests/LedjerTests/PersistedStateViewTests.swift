@@ -185,7 +185,7 @@ private func fastOptions(maxSize: Int = 64, maxInterval: Duration = .millisecond
             #expect(committedThrough == 1)
             #expect(attempts == 3)
         }
-        await #expect(throws: PersistedViewError.self) { try await view.accumulator() }
+        #expect(throws: PersistedViewError.self) { try view.accumulator() }
         #expect(reported.value != nil)
         await view.close()
     }
@@ -211,6 +211,24 @@ private func fastOptions(maxSize: Int = 64, maxInterval: Duration = .millisecond
         } catch PersistedViewError.awaitTimedOut {
         }
         await view.close()
+    }
+
+    @Test func aDroppedHandleShutsTheViewDown() async throws {
+        let store = InMemoryEventStore()
+        let acc = TotalsAccumulator()
+        weak var weakHandle: PersistedViewHandle<TotalsAccumulator>?
+        func startAndDrop() async throws {
+            let view = try await totalsView.start(on: store, accumulator: acc, options: fastOptions())
+            weakHandle = view
+        }
+        try await startAndDrop()
+        try await eventually { await acc.closed }
+        #expect(weakHandle == nil)
+
+        // It no longer follows the log.
+        try await store.append([Counted(id: "a", num: 1)])
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await acc.total("a") == 0)
     }
 
     @Test func closingTwiceIsANoOp() async throws {
@@ -242,4 +260,14 @@ final class ErrorBox: @unchecked Sendable {
     private var _value: (any Error)?
     func set(_ error: any Error) { lock.withLock { _value = error } }
     var value: (any Error)? { lock.withLock { _value } }
+}
+
+/// Polls `condition` until it holds, or fails after `timeout`.
+func eventually(timeout: Duration = .seconds(2), _ condition: () async -> Bool) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now + timeout
+    while await !condition() {
+        if clock.now > deadline { throw ContractFailure(message: "condition not met within \(timeout)") }
+        try await Task.sleep(for: .milliseconds(5))
+    }
 }

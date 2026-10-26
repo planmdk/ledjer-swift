@@ -156,7 +156,7 @@ public func gt<A: PersistedAccumulator>(
     do {
         let position = try await store.append(given)
         try await running.awaitPosition(position, timeout: timeout)
-        let satisfied = try await predicate(try await running.accumulator())
+        let satisfied = try await predicate(try running.accumulator())
         guard satisfied else {
             throw ScenarioFailure("The persisted view's accumulator does not satisfy `then`")
         }
