@@ -85,6 +85,7 @@ extension EventStore {
 
     /// Appends typed events, all with the same extra `metadata`.
     @discardableResult
+    @_disfavoredOverload  // so that `append([])` means the `[NewEvent]` overload
     public func append(
         _ events: [any Event],
         metadata: Metadata = [:],

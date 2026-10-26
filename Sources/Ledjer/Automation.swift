@@ -37,20 +37,37 @@ public struct Trigger: Sendable {
 }
 
 /// A running automation. Keep the handle for as long as it should run: it stops
-/// when stopped with `stop()`, or when the handle is dropped.
-public final class Automation: Sendable {
-    private let tasks: [Task<Void, Never>]
+/// when stopped with `stop()`, when its event subscription fails, or when the handle is dropped.
+public final class Automation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tasks: [Task<Void, Never>] = []
+    private var running = true
     private let signals: AsyncStream<Void>.Continuation
 
-    init(tasks: [Task<Void, Never>], signals: AsyncStream<Void>.Continuation) {
-        self.tasks = tasks
+    init(signals: AsyncStream<Void>.Continuation) {
         self.signals = signals
     }
 
+    fileprivate func add(_ task: Task<Void, Never>) {
+        let stopped = lock.withLock {
+            if running { tasks.append(task) }
+            return !running
+        }
+        if stopped { task.cancel() }
+    }
+
+    /// Whether the automation still listens for triggers.
+    public var isRunning: Bool { lock.withLock { running } }
+
     /// Stops listening for triggers. A run of the body in progress is cancelled.
     public func stop() {
+        let toCancel = lock.withLock {
+            running = false
+            defer { tasks = [] }
+            return tasks
+        }
         signals.finish()
-        tasks.forEach { $0.cancel() }
+        toCancel.forEach { $0.cancel() }
     }
 
     deinit { stop() }
@@ -62,7 +79,10 @@ public final class Automation: Sendable {
 /// body never overlap. Subscriptions are in place when this returns, so
 /// events appended afterwards trigger the automation.
 ///
-/// A body that throws is reported to `onError`, and the automation keeps running.
+/// A body that throws is reported to `onError`, and the automation keeps
+/// running. If an event subscription fails, the failure is reported to
+/// `onError` and the whole automation stops (`isRunning` becomes `false`),
+/// rather than carrying on deaf to some of its triggers.
 public func automation(
     on store: some EventStore,
     triggers: [Trigger],
@@ -70,22 +90,27 @@ public func automation(
     body: @escaping @Sendable (any EventStore) async throws -> Void
 ) async throws -> Automation {
     let (signals, fire) = AsyncStream<Void>.makeStream()
-    var forwarders: [Task<Void, Never>] = []
+    let handle = Automation(signals: fire)
     do {
         for trigger in triggers {
             switch trigger.kind {
             case .events(let query):
                 let stream = try await store.subscribe(query, startPosition: nil)
-                forwarders.append(Task {
-                    do { for try await _ in stream { fire.yield() } } catch { onError(error) }
+                handle.add(Task { [weak handle] in
+                    do {
+                        for try await _ in stream { fire.yield() }
+                    } catch {
+                        onError(error)
+                        handle?.stop()
+                    }
                 })
             case .signal(let make):
                 let stream = make()
-                forwarders.append(Task {
+                handle.add(Task {
                     for await _ in stream { fire.yield() }
                 })
             case .periodic(let interval):
-                forwarders.append(Task {
+                handle.add(Task {
                     while !Task.isCancelled {
                         try? await Task.sleep(for: interval)
                         if Task.isCancelled { break }
@@ -95,15 +120,15 @@ public func automation(
             }
         }
     } catch {
-        forwarders.forEach { $0.cancel() }
+        handle.stop()
         throw error
     }
     let anyStore: any EventStore = store
-    let runner = Task {
+    handle.add(Task {
         for await _ in signals {
             if Task.isCancelled { break }
             do { try await body(anyStore) } catch { onError(error) }
         }
-    }
-    return Automation(tasks: forwarders + [runner], signals: fire)
+    })
+    return handle
 }

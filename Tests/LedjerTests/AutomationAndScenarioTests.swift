@@ -276,3 +276,42 @@ final class Counter: @unchecked Sendable {
         }
     }
 }
+
+/// A store whose subscriptions fail as soon as they are made.
+private struct FailingSubscriptions: EventStore {
+    struct Boom: Error {}
+    let base = InMemoryEventStore()
+    func source(_ query: Query, startPosition: Position?) async throws -> [StoredEvent] {
+        try await base.source(query, startPosition: startPosition)
+    }
+    func append(_ events: [NewEvent], condition: AppendCondition?) async throws -> Position? {
+        try await base.append(events, condition: condition)
+    }
+    func subscribe(_ query: Query, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
+        AsyncThrowingStream { $0.finish(throwing: Boom()) }
+    }
+}
+
+@Suite struct AutomationFailureTests {
+    @Test func aFailingSubscriptionIsReportedAndStopsTheAutomation() async throws {
+        let errors = Counter()
+        let runs = Counter()
+        let running = try await automation(
+            on: FailingSubscriptions(),
+            triggers: [.event(Counted.self), .periodic(every: .milliseconds(10))],
+            onError: { _ in errors.increment() }
+        ) { _ in runs.increment() }
+        try await eventually { !running.isRunning }
+        #expect(errors.value == 1)
+        let after = runs.value
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(runs.value <= after + 1)  // the periodic trigger stopped too
+    }
+
+    @Test func stopMakesItNotRunning() async throws {
+        let running = try await automation(on: InMemoryEventStore(), triggers: [.event(Counted.self)]) { _ in }
+        #expect(running.isRunning)
+        running.stop()
+        #expect(!running.isRunning)
+    }
+}

@@ -70,8 +70,20 @@ public struct QueryItem: Hashable, Sendable {
 public struct Query: Hashable, Sendable {
     public let items: Set<QueryItem>
 
-    public init(_ items: [QueryItem]) { self.items = Set(items) }
-    public init(_ item: QueryItem) { self.items = [item] }
+    /// The query flattened to one selector per event type, with the bindings
+    /// that apply to it. This is what stores execute.
+    public let selectors: Set<Selector>
+
+    public init(_ items: [QueryItem]) {
+        let items = Set(items)
+        self.items = items
+        self.selectors = Self.selectors(of: items)
+    }
+
+    public init(_ item: QueryItem) { self.init([item]) }
+
+    public static func == (lhs: Query, rhs: Query) -> Bool { lhs.items == rhs.items }
+    public func hash(into hasher: inout Hasher) { hasher.combine(items) }
 
     /// A query of one item.
     public static func of(_ eventTypes: any Event.Type..., where tagBindings: TagBindings = [:]) throws -> Query {
@@ -84,9 +96,7 @@ public struct Query: Hashable, Sendable {
         public let required: [TagPath: Scalar]
     }
 
-    /// The query flattened to one selector per event type, with the bindings
-    /// that apply to it. This is what stores execute.
-    public var selectors: Set<Selector> {
+    private static func selectors(of items: Set<QueryItem>) -> Set<Selector> {
         var result = Set<Selector>()
         for item in items {
             for info in item.eventTypes {

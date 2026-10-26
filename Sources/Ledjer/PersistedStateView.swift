@@ -60,11 +60,11 @@ public struct PersistedStateViewBinding<Operation: Sendable>: Sendable {
 }
 
 public struct PersistedViewOptions: Sendable {
-    /// Events per commit.
+    /// Events per commit. At least 1.
     public var maxSize = 64
     /// The longest an applied event waits for its commit.
     public var maxInterval: Duration = .milliseconds(200)
-    /// How often a failed commit is retried.
+    /// How often a failed commit is retried. At least 0.
     public var commitRetries = 3
     /// The delay before the first retry, doubled for each following retry.
     public var commitBackoff: Duration = .milliseconds(100)
@@ -250,6 +250,9 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
         self.routes = routes
         self.query = query
         self.acc = accumulator
+        var options = options
+        options.maxSize = max(1, options.maxSize)
+        options.commitRetries = max(0, options.commitRetries)
         self.options = options
     }
 

@@ -263,6 +263,24 @@ private func fastOptions(maxSize: Int = 64, maxInterval: Duration = .millisecond
         }
     }
 
+    @Test func nonsensicalOptionsAreClamped() async throws {
+        var options = fastOptions()
+        options.maxSize = 0
+        options.commitRetries = -3
+        let acc = TotalsAccumulator()
+        let store = InMemoryEventStore()
+        let view = try await totalsView.start(on: store, accumulator: acc, options: options)
+        let position = try await store.append([Counted(id: "a", num: 1), Counted(id: "a", num: 2)])
+        try await view.awaitPosition(position)
+        #expect(await acc.total("a") == 3)
+        await view.close()
+    }
+
+    @Test func appendingNothingCompiles() async throws {
+        let store = InMemoryEventStore()
+        #expect(try await store.append([]) == nil)
+    }
+
     @Test func closingTwiceIsANoOp() async throws {
         let acc = TotalsAccumulator()
         let view = try await totalsView.start(on: InMemoryEventStore(), accumulator: acc)
