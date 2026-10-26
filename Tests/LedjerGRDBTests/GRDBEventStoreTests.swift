@@ -135,30 +135,6 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
     }
 }
 
-@Suite struct GRDBSubscriptionCancellationTests {
-    /// Cancelling a consumer ends its stream cleanly like the in-memory store does, also when the
-    /// cancellation lands in the middle of a database read, which used to throw a CancellationError.
-    @Test func cancellingAConsumerEndsTheStreamWithoutAnError() async throws {
-        let store = try GRDBEventStore(DatabasePool(path: NSTemporaryDirectory() + "ledjer-\(UUID().uuidString).sqlite"))
-        try await store.append((0..<4000).map { UUIDTagged(id: UUID(), num: $0) })
-        let query = try Query.of(UUIDTagged.self)
-
-        var failures: [String] = []
-        for round in 0..<60 {
-            let stream = try await store.subscribe(query, startPosition: 0)
-            let consumer = Task { () throws -> Int in
-                var seen = 0
-                for try await _ in stream { seen += 1 }
-                return seen
-            }
-            try await Task.sleep(for: .microseconds(round * 150))
-            consumer.cancel()
-            if case .failure(let error) = await consumer.result { failures.append("\(error)") }
-        }
-        #expect(failures.isEmpty, "\(failures)")
-    }
-}
-
 @Suite struct GRDBAutomationTests {
     /// Stopping cancels an event subscription wherever it is, including in the middle of a database
     /// read, which used to be reported to `onError` as a failure (about 1 stop in 3).

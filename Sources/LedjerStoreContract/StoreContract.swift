@@ -115,6 +115,7 @@ public enum StoreContract {
         try await subscribeFromNow(makeStore)
         try await subscribeWithStartPosition(makeStore)
         try await subscribeTerminationDoesNotDisturbAppends(makeStore)
+        try await cancellingAConsumerEndsTheStreamWithoutAnError(makeStore)
     }
 
     public static func positionsStartAtOne(_ makeStore: StoreFactory) async throws {
@@ -443,5 +444,28 @@ public enum StoreContract {
         try await Task.sleep(for: .milliseconds(100))
         let position = try await store.append([OrderPlaced(orderId: UUID())])
         try check(position == 1, "append after a cancelled subscription: \(String(describing: position))")
+        try check(c.error == nil, "a cancelled subscription finishes without an error: \(String(describing: c.error))")
+    }
+
+    /// Cancelling a consumer ends its stream without an error, also when the cancellation lands in the
+    /// middle of a read of the log (which in a database-backed store may throw a `CancellationError`).
+    public static func cancellingAConsumerEndsTheStreamWithoutAnError(_ makeStore: StoreFactory) async throws {
+        let store = try await makeStore()
+        try await store.append((0..<4000).map { UUIDTagged(id: UUID(), num: $0) })
+        let query = try Query.of(UUIDTagged.self)
+
+        var failures: [String] = []
+        for round in 0..<60 {
+            let stream = try await store.subscribe(query, startPosition: 0)
+            let consumer = Task { () throws -> Int in
+                var seen = 0
+                for try await _ in stream { seen += 1 }
+                return seen
+            }
+            try await Task.sleep(for: .microseconds(round * 150))
+            consumer.cancel()
+            if case .failure(let error) = await consumer.result { failures.append("\(error)") }
+        }
+        try check(failures.isEmpty, "cancelling a consumer failed its stream: \(failures)")
     }
 }

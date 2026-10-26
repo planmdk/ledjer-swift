@@ -16,4 +16,7 @@ import Testing
     @Test func subscribeTermination() async throws {
         try await StoreContract.subscribeTerminationDoesNotDisturbAppends(Self.make)
     }
+    @Test func cancellingAConsumerEndsTheStreamWithoutAnError() async throws {
+        try await StoreContract.cancellingAConsumerEndsTheStreamWithoutAnError(Self.make)
+    }
 }
