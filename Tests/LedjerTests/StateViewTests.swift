@@ -27,6 +27,13 @@ private func expectInvalidQuery(_ body: () async throws -> some Any) async {
     }
 }
 
+struct MaybeTagged: Event {
+    static let eventType: EventType = "view-test/maybe-tagged"
+    static var tags: [EventTag<Self>] { [EventTag("id", \.id)] }
+    var id: String?
+    var num: Int
+}
+
 @Suite struct StateViewTests {
     /// +num for TestEvent, -num for TestEventWithVersionTag for id abc-222
     let view = StateView(initial: 0, bindings: [
@@ -121,5 +128,47 @@ private func expectInvalidQuery(_ body: () async throws -> some Any) async {
 
     @Test func emptyStoreYieldsTheInitialValue() async throws {
         #expect(try await view.run(on: InMemoryEventStore()) == 0)
+    }
+
+    // Routing follows Clojure's has-bindings?: a bound tag that the event lacks is ignored, only
+    // a different value rules a binding out.
+
+    @Test func tagBoundBindingsDoNotSelectEventsWithoutTheTag() async throws {
+        let store = InMemoryEventStore()
+        try await store.append([MaybeTagged(id: "x", num: 1), MaybeTagged(id: nil, num: 10), MaybeTagged(id: "y", num: 100)])
+
+        // The queries of both bindings ask for a tag value, so neither selects the untagged event.
+        let view = StateView(initial: 0, bindings: [
+            .on(MaybeTagged.self, where: [.payload("id"): "x"]) { acc, e in acc += e.num },
+            .on(MaybeTagged.self, where: [.payload("id"): "y"]) { acc, e in acc += e.num },
+        ])
+        #expect(try await view.run(on: store) == 101)
+    }
+
+    @Test func anEventWithoutTheTagMatchesEveryTaggedBindingOfItsType() async throws {
+        let store = InMemoryEventStore()
+        try await store.append([MaybeTagged(id: nil, num: 10)])
+        // Selected through the unbound binding, but the tagged one isn't ruled out either.
+        // Like Clojure, that makes two matching bindings, which is an error.
+        let view = StateView(initial: 0, bindings: [
+            .on(MaybeTagged.self) { acc, e in acc += e.num },
+            .on(MaybeTagged.self, where: [.payload("id"): "x"]) { acc, e in acc -= e.num },
+        ])
+        do {
+            _ = try await view.run(on: store)
+            Issue.record("expected two matching bindings")
+        } catch LedjerError.expectedExactlyOneBinding(_, let matching) {
+            #expect(matching == 2)
+        }
+    }
+
+    @Test func aDifferentValueRulesABindingOut() async throws {
+        let store = InMemoryEventStore()
+        try await store.append([MaybeTagged(id: "z", num: 10)])
+        let view = StateView(initial: 0, bindings: [
+            .on(MaybeTagged.self) { acc, e in acc += e.num },
+            .on(MaybeTagged.self, where: [.payload("id"): "x"]) { acc, e in acc -= e.num },
+        ])
+        #expect(try await view.run(on: store) == 10)
     }
 }

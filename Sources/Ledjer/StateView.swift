@@ -29,6 +29,9 @@ struct EventSelector: Sendable {
         }
     }
 
+    /// Whether this binding applies to `event`: the type matches and every bound tag has the
+    /// bound value. As in Clojure's `has-bindings?`, a bound tag that the event doesn't have
+    /// is not held against it: only a different value does.
     func matches(_ event: StoredEvent) throws -> Bool {
         guard event.type == eventType.type else { return false }
         let required = tagBindings.compactMap { path, binding -> (TagPath, Scalar)? in
@@ -36,7 +39,7 @@ struct EventSelector: Sendable {
         }
         if required.isEmpty { return true }
         let values = try tagValues(event)
-        return required.allSatisfy { values[$0.0] == $0.1 }
+        return required.allSatisfy { path, value in values[path].map { $0 == value } ?? true }
     }
 }
 
