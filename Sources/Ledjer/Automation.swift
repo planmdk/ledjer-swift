@@ -36,6 +36,17 @@ public struct Trigger: Sendable {
     }
 }
 
+public enum AutomationError: Error, CustomStringConvertible {
+    /// An event subscription ended without an error, so its trigger can't fire any more.
+    case subscriptionEnded
+
+    public var description: String {
+        switch self {
+        case .subscriptionEnded: "An event subscription of the automation ended"
+        }
+    }
+}
+
 /// A running automation. Keep the handle for as long as it should run: it stops
 /// when stopped with `stop()`, when its event subscription fails, or when the handle is dropped.
 public final class Automation: @unchecked Sendable {
@@ -100,6 +111,10 @@ public func automation(
                 handle.add(Task { [weak handle] in
                     do {
                         for try await _ in stream { fire.yield() }
+                        // The stream is over without anyone having stopped us: this trigger would never fire again.
+                        if Task.isCancelled { return }
+                        onError(AutomationError.subscriptionEnded)
+                        handle?.stop()
                     } catch {
                         // Stopping cancels this task, and whatever the store was doing then fails with
                         // it: that is the stop, not a failure.

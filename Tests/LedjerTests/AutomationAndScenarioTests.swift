@@ -329,6 +329,22 @@ private struct FailingSubscriptions: EventStore {
         #expect(runs.value <= after + 1)  // the periodic trigger stopped too
     }
 
+    @Test func aSubscriptionThatEndsCleanlyIsReportedAndStopsTheAutomation() async throws {
+        let errors = ErrorBox()
+        let reports = Counter()
+        let running = try await automation(
+            on: ScriptedSubscriptions(script: .endsCleanly),
+            triggers: [.event(Counted.self)],
+            onError: {
+                errors.set($0)
+                reports.increment()
+            }
+        ) { _ in }
+        try await eventually { !running.isRunning }
+        #expect(errors.value is AutomationError)
+        #expect(reports.value == 1)
+    }
+
     @Test func stopMakesItNotRunning() async throws {
         let running = try await automation(on: InMemoryEventStore(), triggers: [.event(Counted.self)]) { _ in }
         #expect(running.isRunning)

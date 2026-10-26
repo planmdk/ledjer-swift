@@ -502,7 +502,7 @@ actor SlowAccumulator: PersistedAccumulator {
 }
 
 /// A store whose subscriptions are scripted, over an in-memory store holding the events.
-private struct ScriptedSubscriptions: EventStore {
+struct ScriptedSubscriptions: EventStore {
     enum Script: Sendable {
         /// The stream ends without an error.
         case endsCleanly
