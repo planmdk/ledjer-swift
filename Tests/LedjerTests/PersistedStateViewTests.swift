@@ -706,6 +706,11 @@ actor FencedAccumulator: PersistedAccumulator {
         if !waiting.isEmpty { waiting.removeFirst().resume() }
     }
 
+    /// Lets the most recently held-up commit go on, and no other.
+    func releaseNewest() {
+        if !waiting.isEmpty { waiting.removeLast().resume() }
+    }
+
     /// Lets the held-up commits go on.
     func openGate() {
         gated = false
@@ -866,6 +871,35 @@ actor FencedAccumulator: PersistedAccumulator {
         #expect(await acc.total("a") == 1, "the event was applied once")
         #expect(await acc.applied == 1)
         #expect(stale.failure == nil, "and the stale view, closed already, has nothing to report")
+        await fresh.close()
+    }
+
+    /// The other order: the new view wins, and the closed view's commit is then refused by the fence.
+    /// That is nobody's failure: `close()` has returned, and the new view is the one that carries on.
+    @Test func aClosedViewsCommitRefusedAfterTheNewViewWonReportsNothing() async throws {
+        let store = InMemoryEventStore()
+        let acc = FencedAccumulator(gated: true)
+        let reported = ErrorBox()
+        var options = fastOptions(maxSize: 1)
+        options.closeTimeout = .milliseconds(100)
+        options.onError = { reported.set($0) }
+        let stale = try await totalsView.start(on: store, accumulator: acc, options: options)
+        let position = try await store.append([Counted(id: "a", num: 1)])
+        try await eventually { await acc.attempts == 1 }
+        await stale.close()
+
+        let fresh = try await totalsView.start(on: store, accumulator: acc, options: fastOptions(maxSize: 1))
+        try await eventually { await acc.attempts == 2 }
+        await acc.releaseNewest()  // the new view's commit goes first...
+        try await fresh.awaitPosition(position)
+        await acc.releaseOldest()  // ...and the stale one is refused
+        try await Task.sleep(for: .milliseconds(150))  // for the stale worker to deal with it
+
+        #expect(await acc.attempts == 2)
+        #expect(await acc.applied == 1)
+        #expect(stale.failure == nil, "a failure was recorded after close() returned: \(String(describing: stale.failure))")
+        #expect(reported.value == nil, "the closed view reported \(String(describing: reported.value))")
+        #expect(fresh.failure == nil)
         await fresh.close()
     }
 }

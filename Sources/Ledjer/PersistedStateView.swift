@@ -395,9 +395,11 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
             defer { inbox.close() }
             do {
                 try await work(inbox, startPosition: start)
-            } catch is CancellationError where Task.isCancelled {
-                // A shutdown that gave up waiting cancelled the worker. That reports nothing. A
-                // CancellationError of any other origin, e.g. thrown by an accumulator, is a failure.
+            } catch where Task.isCancelled {
+                // A shutdown that gave up waiting cancelled the worker, and `close()` has returned: the
+                // view is closed, so whatever this worker ends with (the cancellation itself, or a stale
+                // commit refused by the fence because a new view took over) is not its failure to report.
+                // A CancellationError thrown while the worker was not cancelled is a failure, below.
             } catch {
                 if state.fail(error) {
                     pump.cancel()
