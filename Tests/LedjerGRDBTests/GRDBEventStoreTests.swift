@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 import Ledjer
-import LedjerGRDB
+@testable import LedjerGRDB
 import LedjerStoreContract
 import Testing
 
@@ -62,17 +62,49 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
         #expect(tags == 1)  // the one event's orderId; it has no customer
     }
 
-    @Test func tagLookupsUseTheIndex() throws {
+    /// The query plan of the SQL the store really generates, after filling the log.
+    private func plan(_ query: Query, after: Position = 0, upTo: Position? = nil, limit: Int? = nil) throws -> [String] {
         let queue = try DatabaseQueue()
         _ = try GRDBEventStore(queue)
-        let plan = try queue.read { db in
-            try Row.fetchAll(db, sql: """
-                EXPLAIN QUERY PLAN
-                SELECT e.position FROM ledjer_event e
-                WHERE e.type = ? AND EXISTS (SELECT 1 FROM ledjer_event_tag t WHERE t.position = e.position AND t.name = ? AND t.value = ?)
-                """, arguments: ["x", "payload.id", "uuid:x"])
-                .map { $0["detail"] as String }
+        try queue.write { db in
+            for i in 0..<2000 {
+                try db.execute(sql: "INSERT INTO ledjer_event (type, metadata, payload) VALUES (?, '{}', '{}')",
+                               arguments: [i % 2 == 0 ? "contract/order-placed" : "contract/order-noted"])
+                if i % 2 == 0 {
+                    try db.execute(sql: "INSERT INTO ledjer_event_tag (position, name, value) VALUES (?, 'payload.orderId', ?)",
+                                   arguments: [i + 1, "uuid:\(UUID().uuidString)"])
+                }
+            }
+            try db.execute(sql: "ANALYZE")
         }
-        #expect(plan.allSatisfy { !$0.hasPrefix("SCAN ledjer_event_tag") }, "\(plan)")
+        let (sql, arguments) = try #require(GRDBEventStore.positionsSQL(for: query, after: after, upTo: upTo, limit: limit))
+        return try queue.read { db in
+            try Row.fetchAll(db, sql: "EXPLAIN QUERY PLAN \(sql)", arguments: arguments).map { $0["detail"] as String }
+        }
+    }
+
+    @Test func taggedSelectorsAreDrivenByTheTagIndex() throws {
+        let query = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(UUID())])
+        for plan in [try plan(query), try plan(query, after: 10, upTo: 1000, limit: 500)] {
+            #expect(plan.contains { $0.contains("ledjer_event_tag_lookup") && $0.contains("name=?") && $0.contains("value=?") }, "\(plan)")
+            // The log itself is never scanned or walked for a tagged selector.
+            #expect(!plan.contains { $0.contains("SCAN e") || $0.contains("SCAN ledjer_event ") || $0.contains("ledjer_event_type") }, "\(plan)")
+        }
+    }
+
+    @Test func aSecondSelectorDoesNotDefeatTheTagIndex() throws {
+        let query = Query([
+            try QueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())]),
+            try QueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())]),
+        ])
+        let plan = try plan(query, limit: 1)
+        #expect(plan.filter { $0.contains("ledjer_event_tag_lookup") }.count >= 2, "\(plan)")
+        #expect(!plan.contains { $0.contains("SCAN e") || $0.contains("SCAN ledjer_event ") }, "\(plan)")
+    }
+
+    @Test func untaggedSelectorsUseTheTypeIndex() throws {
+        let plan = try plan(try Query.of(OrderPlaced.self), after: 5)
+        #expect(plan.contains { $0.contains("ledjer_event_type") }, "\(plan)")
+        #expect(!plan.contains { $0.contains("SCAN") && !$0.contains("USING") }, "\(plan)")
     }
 }

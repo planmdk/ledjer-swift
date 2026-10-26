@@ -57,14 +57,13 @@ public final class GRDBEventStore: EventStore {
     @discardableResult
     public func append(_ events: [NewEvent], condition: AppendCondition?) async throws -> Position? {
         try await writer.write { db in
-            if let condition {
-                let (clause, arguments) = Self.clause(for: condition.query)
-                let conflict = try Bool.fetchOne(
-                    db,
-                    sql: "SELECT EXISTS (SELECT 1 FROM ledjer_event e WHERE e.position > ? AND (\(clause)))",
-                    arguments: StatementArguments([condition.after ?? 0]) + arguments
-                )
-                if conflict == true { throw LedjerError.appendConditionFailed }
+            if let condition,
+                let (positions, arguments) = Self.positionsSQL(
+                    for: condition.query, after: condition.after ?? 0, upTo: nil, limit: 1)
+            {
+                if try Int.fetchOne(db, sql: "SELECT 1 FROM (\(positions)) LIMIT 1", arguments: arguments) != nil {
+                    throw LedjerError.appendConditionFailed
+                }
             }
             var last: Position?
             for event in events {
@@ -140,20 +139,13 @@ public final class GRDBEventStore: EventStore {
         upTo: Position?,
         limit: Int?
     ) throws -> [StoredEvent] {
-        let (clause, arguments) = clause(for: query)
-        var sql = "SELECT e.position, e.type, e.metadata, e.payload FROM ledjer_event e WHERE e.position > ?"
-        var all = StatementArguments([after])
-        if let upTo {
-            sql += " AND e.position <= ?"
-            all += [upTo]
-        }
-        sql += " AND (\(clause)) ORDER BY e.position"
-        all += arguments
+        guard var (sql, arguments) = positionsSQL(for: query, after: after, upTo: upTo, limit: limit) else { return [] }
+        sql = "SELECT e.position, e.type, e.metadata, e.payload FROM ledjer_event e WHERE e.position IN (\(sql)) ORDER BY e.position"
         if let limit {
             sql += " LIMIT ?"
-            all += [limit]
+            arguments += [limit]
         }
-        return try Row.fetchAll(db, sql: sql, arguments: all).map { row in
+        return try Row.fetchAll(db, sql: sql, arguments: arguments).map { row in
             StoredEvent(
                 position: row["position"],
                 type: EventType(row["type"] as String),
@@ -163,28 +155,64 @@ public final class GRDBEventStore: EventStore {
         }
     }
 
-    /// An SQL condition on `ledjer_event e` selecting the events of `query`.
+    /// SQL selecting the positions of the events of `query` within `(after, upTo]`, or `nil`
+    /// if the query selects nothing.
     ///
-    /// One alternative per selector: the event's type, and for each tag the
-    /// selector requires, a matching row in `ledjer_event_tag`. Tag values
-    /// carry their type, so a UUID never matches its string.
-    private static func clause(for query: Query) -> (sql: String, arguments: StatementArguments) {
+    /// One branch per selector, combined with `UNION`. A branch with required
+    /// tags is driven by the tag index, `(name, value, position)`: a range scan
+    /// over one tag, checking the event's type and any further tags per hit.
+    /// So the cost follows the number of events with that tag, not the length
+    /// of the log. A branch without tags uses the `(type, position)` index.
+    /// With a `limit`, each branch is limited as well, as the first `limit`
+    /// of a union lie within the first `limit` of its branches.
+    ///
+    /// Tag values carry their type, so a UUID never matches its string.
+    static func positionsSQL(
+        for query: Query,
+        after: Position,
+        upTo: Position?,
+        limit: Int?
+    ) -> (sql: String, arguments: StatementArguments)? {
         let selectors = query.selectors.sorted {
             ($0.type.rawValue, $0.required.count) < ($1.type.rawValue, $1.required.count)
         }
-        guard !selectors.isEmpty else { return ("0", []) }
+        guard !selectors.isEmpty else { return nil }
         var arguments = StatementArguments()
-        let alternatives = selectors.map { selector in
-            var parts = ["e.type = ?"]
-            arguments += [selector.type.rawValue]
-            for (path, value) in selector.required.sorted(by: { $0.key.description < $1.key.description }) {
-                parts.append(
-                    "EXISTS (SELECT 1 FROM ledjer_event_tag t WHERE t.position = e.position AND t.name = ? AND t.value = ?)"
-                )
-                arguments += [path.description, value.encoded]
+        func bounds(_ column: String) -> String {
+            arguments += [after]
+            if let upTo {
+                arguments += [upTo]
+                return " AND \(column) > ? AND \(column) <= ?"
             }
-            return "(" + parts.joined(separator: " AND ") + ")"
+            return " AND \(column) > ?"
         }
-        return (alternatives.joined(separator: " OR "), arguments)
+        let branches = selectors.map { selector -> String in
+            let tags = selector.required.sorted { $0.key.description < $1.key.description }
+            var sql: String
+            if let (path, value) = tags.first {
+                sql = "SELECT t0.position AS position FROM ledjer_event_tag t0 WHERE t0.name = ? AND t0.value = ?"
+                arguments += [path.description, value.encoded]
+                sql += bounds("t0.position")
+                sql += " AND EXISTS (SELECT 1 FROM ledjer_event e WHERE e.position = t0.position AND e.type = ?)"
+                arguments += [selector.type.rawValue]
+                for (index, (path, value)) in tags.dropFirst().enumerated() {
+                    let t = "t\(index + 1)"
+                    sql += " AND EXISTS (SELECT 1 FROM ledjer_event_tag \(t) WHERE \(t).position = t0.position AND \(t).name = ? AND \(t).value = ?)"
+                    arguments += [path.description, value.encoded]
+                }
+                sql += " ORDER BY t0.position"
+            } else {
+                sql = "SELECT e.position AS position FROM ledjer_event e WHERE e.type = ?"
+                arguments += [selector.type.rawValue]
+                sql += bounds("e.position")
+                sql += " ORDER BY e.position"
+            }
+            if let limit {
+                sql += " LIMIT ?"
+                arguments += [limit]
+            }
+            return "SELECT position FROM (\(sql))"
+        }
+        return (branches.joined(separator: " UNION "), arguments)
     }
 }
