@@ -391,8 +391,9 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
             defer { inbox.close() }
             do {
                 try await work(inbox, startPosition: start)
-            } catch is CancellationError {
-                // Only a shutdown that gave up waiting cancels the worker, and it reports nothing.
+            } catch is CancellationError where Task.isCancelled {
+                // A shutdown that gave up waiting cancelled the worker. That reports nothing. A
+                // CancellationError of any other origin, e.g. thrown by an accumulator, is a failure.
             } catch {
                 if state.fail(error) {
                     pump.cancel()
@@ -473,7 +474,9 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
                 try await acc.commit(operations, after: checkpoint, through: position)
                 return
             } catch {
-                if error is CancellationError { throw error }
+                // Our own cancellation ends the view quietly. A CancellationError that the accumulator
+                // throws for its own reasons doesn't: it is a failed commit like any other.
+                if error is CancellationError, Task.isCancelled { throw error }
                 // A conflict doesn't go away by trying again.
                 if error is PersistedAccumulatorConflict || attempt > options.commitRetries {
                     throw PersistedViewError.commit(position: position, attempts: attempt, underlying: error)

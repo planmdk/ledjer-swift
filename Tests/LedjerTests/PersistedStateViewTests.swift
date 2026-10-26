@@ -602,3 +602,69 @@ private struct ScriptedSubscriptions: EventStore {
         #expect(await acc.commitCount == 0, "the stuck commit went through after the view was shut down")
     }
 }
+
+/// An accumulator that throws a CancellationError of its own making, e.g. from a helper that
+/// maps its timeouts to it. Nobody has cancelled the view.
+actor CancelsOnItsOwn: PersistedAccumulator {
+    typealias Operation = Add
+    private var failuresLeft: Int
+    private var sequence: Position?
+    private(set) var attempts = 0
+    private(set) var total = 0
+
+    init(failures: Int) { failuresLeft = failures }
+
+    var sequenceNumber: Position? { sequence }
+
+    func commit(_ operations: [Add], through position: Position) async throws {
+        attempts += 1
+        if failuresLeft > 0 {
+            failuresLeft -= 1
+            throw CancellationError()
+        }
+        total += operations.reduce(0) { $0 + $1.amount }
+        sequence = position
+    }
+}
+
+@Suite struct PersistedViewOwnCancellationTests {
+    @Test func aCancellationErrorOfTheAccumulatorsOwnIsAFailureNotASilentStop() async throws {
+        let store = InMemoryEventStore()
+        let acc = CancelsOnItsOwn(failures: 100)
+        let reported = ErrorBox()
+        var options = fastOptions()
+        options.commitRetries = 1
+        options.onError = { reported.set($0) }
+        let view = try await totalsView.start(on: store, accumulator: acc, options: options)
+        let position = try await store.append([Counted(id: "a", num: 1)])
+
+        do {
+            try await view.awaitPosition(position)
+            Issue.record("expected the commit failure")
+        } catch PersistedViewError.commit(let through, let attempts, let underlying) {
+            #expect(through == 1)
+            #expect(attempts == 2, "it was retried like any failed commit")
+            #expect(underlying is CancellationError)
+        }
+        #expect(view.failure != nil)
+        #expect(reported.value != nil, "onError was called")
+        #expect(throws: PersistedViewError.self) { try view.accumulator() }
+        await view.close()
+    }
+
+    @Test func aCancellationErrorOfTheAccumulatorsOwnIsRetried() async throws {
+        let store = InMemoryEventStore()
+        let acc = CancelsOnItsOwn(failures: 1)
+        let view = try await totalsView.start(on: store, accumulator: acc, options: fastOptions())
+        let position = try await store.append([Counted(id: "a", num: 5)])
+        try await view.awaitPosition(position)
+        #expect(await acc.attempts == 2)
+        #expect(await acc.total == 5)
+
+        // And the view keeps going afterwards.
+        let more = try await store.append([Counted(id: "a", num: 1)])
+        try await view.awaitPosition(more)
+        #expect(await acc.total == 6)
+        await view.close()
+    }
+}
