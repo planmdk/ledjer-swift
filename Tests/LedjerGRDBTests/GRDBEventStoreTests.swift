@@ -108,3 +108,32 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
         #expect(!plan.contains { $0.contains("SCAN") && !$0.contains("USING") }, "\(plan)")
     }
 }
+
+@Suite struct GRDBAutomationTests {
+    /// Stopping cancels an event subscription wherever it is, including in the middle of a database
+    /// read, which used to be reported to `onError` as a failure (about 1 stop in 3).
+    @Test func stoppingAnAutomationIsNotReportedAsAFailure() async throws {
+        let store = try GRDBEventStore(DatabasePool(path: NSTemporaryDirectory() + "ledjer-\(UUID().uuidString).sqlite"))
+        let reported = ErrorList()
+        for round in 0..<40 {
+            let running = try await automation(
+                on: store,
+                triggers: [.event(UUIDTagged.self)],
+                onError: { reported.add($0) }
+            ) { _ in }
+            // A big append: the subscription's read of it is long enough to be cancelled in the middle.
+            try await store.append((0..<400).map { UUIDTagged(id: UUID(), num: round * 1000 + $0) })
+            if round % 2 == 0 { try await Task.sleep(for: .milliseconds(round % 5)) }
+            running.stop()
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(reported.errors.isEmpty, "\(reported.errors)")
+    }
+}
+
+final class ErrorList: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _errors: [String] = []
+    var errors: [String] { lock.withLock { _errors } }
+    func add(_ error: any Error) { lock.withLock { _errors.append("\(error)") } }
+}

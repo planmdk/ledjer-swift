@@ -159,6 +159,25 @@ private func reactImmediately(_ store: any EventStore) async throws -> Automatio
         #expect(runs.value == 0)
     }
 
+    @Test func stoppingABodyInFlightIsNotAFailure() async throws {
+        let store = InMemoryEventStore()
+        let errors = Counter()
+        let started = Counter()
+        let running = try await automation(
+            on: store,
+            triggers: [.event(Counted.self)],
+            onError: { _ in errors.increment() }
+        ) { _ in
+            started.increment()
+            try await Task.sleep(for: .seconds(30))  // cancelled by stop(): throws CancellationError
+        }
+        try await store.append([Counted(id: "a", num: 1)])
+        try await started.wait(for: 1)
+        running.stop()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(errors.value == 0)
+    }
+
     @Test func aFailingBodyIsReportedAndTheAutomationKeepsRunning() async throws {
         struct Boom: Error {}
         let store = InMemoryEventStore()

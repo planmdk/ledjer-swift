@@ -80,7 +80,8 @@ public final class Automation: @unchecked Sendable {
 /// events appended afterwards trigger the automation.
 ///
 /// A body that throws is reported to `onError`, and the automation keeps
-/// running. If an event subscription fails, the failure is reported to
+/// running. Errors that come of the automation being stopped, a body or a
+/// subscription cancelled in flight, are not reported. If an event subscription fails, the failure is reported to
 /// `onError` and the whole automation stops (`isRunning` becomes `false`),
 /// rather than carrying on deaf to some of its triggers.
 public func automation(
@@ -100,6 +101,9 @@ public func automation(
                     do {
                         for try await _ in stream { fire.yield() }
                     } catch {
+                        // Stopping cancels this task, and whatever the store was doing then fails with
+                        // it: that is the stop, not a failure.
+                        if Task.isCancelled { return }
                         onError(error)
                         handle?.stop()
                     }
@@ -127,7 +131,13 @@ public func automation(
     handle.add(Task {
         for await _ in signals {
             if Task.isCancelled { break }
-            do { try await body(anyStore) } catch { onError(error) }
+            do {
+                try await body(anyStore)
+            } catch {
+                // A body that was cancelled by `stop()` ends however it ends, e.g. with a
+                // CancellationError or its URLSession's cancellation. Not a failure.
+                if !Task.isCancelled { onError(error) }
+            }
         }
     })
     return handle
