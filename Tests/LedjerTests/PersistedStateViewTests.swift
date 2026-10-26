@@ -67,6 +67,17 @@ let totalsView = PersistedStateView<Add>(bindings: [
     .on(Counted.self) { [Add(id: $0.id, amount: $0.num)] },
 ])
 
+/// `totalsView`, counting the events its reducer has applied, so that tests can wait for "applied"
+/// instead of sleeping and hoping.
+private func observedView(_ applied: Counter) -> PersistedStateView<Add> {
+    PersistedStateView<Add>(bindings: [
+        .on(Counted.self) { event in
+            applied.increment()
+            return [Add(id: event.id, amount: event.num)]
+        },
+    ])
+}
+
 private func fastOptions(maxSize: Int = 64, maxInterval: Duration = .milliseconds(10)) -> PersistedViewOptions {
     var options = PersistedViewOptions()
     options.maxSize = maxSize
@@ -136,13 +147,14 @@ private func fastOptions(maxSize: Int = 64, maxInterval: Duration = .millisecond
     @Test func commitsEveryMaxSizeEventsAndFlushesTheRestOnClose() async throws {
         let store = InMemoryEventStore()
         let acc = TotalsAccumulator()
-        let view = try await totalsView.start(on: store, accumulator: acc, options: fastOptions(maxSize: 3, maxInterval: .seconds(30)))
+        let applied = Counter()
+        let view = try await observedView(applied).start(on: store, accumulator: acc, options: fastOptions(maxSize: 3, maxInterval: .seconds(30)))
         try await store.append((1...7).map { Counted(id: "a", num: $0) })
         try await view.awaitPosition(6)
         #expect(await acc.commits.map(\.position) == [3, 6])
         #expect(await acc.total("a") == 21)  // 1 + ... + 6
         // Close commits what has been applied; an event still queued would be left for the next run.
-        try await Task.sleep(for: .milliseconds(100))
+        try await applied.wait(for: 7)
         await view.close()
         #expect(await acc.commits.map(\.position) == [3, 6, 7])
         #expect(await acc.total("a") == 28)
@@ -372,7 +384,7 @@ actor SlowAccumulator: PersistedAccumulator {
         // 300 commits of 10 events at 20 ms each would take 6 s.
         let acc = SlowAccumulator(commitDelay: .milliseconds(20))
         let view = try await totalsView.start(on: store, accumulator: acc, options: fastOptions(maxSize: 10, maxInterval: .seconds(30)))
-        try await Task.sleep(for: .milliseconds(100))
+        try await eventually { await acc.commitCount >= 1 }
 
         let clock = ContinuousClock()
         let start = clock.now
@@ -394,9 +406,10 @@ actor SlowAccumulator: PersistedAccumulator {
     @Test func closeCommitsWhatWasAppliedButNotYetCommitted() async throws {
         let store = InMemoryEventStore()
         let acc = SlowAccumulator()
-        let view = try await totalsView.start(on: store, accumulator: acc, options: fastOptions(maxSize: 1000, maxInterval: .seconds(60)))
+        let applied = Counter()
+        let view = try await observedView(applied).start(on: store, accumulator: acc, options: fastOptions(maxSize: 1000, maxInterval: .seconds(60)))
         try await store.append([Counted(id: "a", num: 1), Counted(id: "a", num: 2)])
-        try await Task.sleep(for: .milliseconds(100))
+        try await applied.wait(for: 2)
         #expect(await acc.sequenceNumber == nil)  // applied, waiting for the batch to fill
         await view.close()
         #expect(await acc.sequenceNumber == 2)
@@ -410,7 +423,7 @@ actor SlowAccumulator: PersistedAccumulator {
         options.closeTimeout = .milliseconds(200)
         let view = try await totalsView.start(on: store, accumulator: acc, options: options)
         try await store.append([Counted(id: "a", num: 1)])
-        try await Task.sleep(for: .milliseconds(100))
+        try await eventually { await acc.commitsEntered == 1 }
 
         let clock = ContinuousClock()
         let start = clock.now
@@ -461,9 +474,10 @@ actor SlowAccumulator: PersistedAccumulator {
         var options = fastOptions(maxSize: 1000, maxInterval: .seconds(60))
         options.commitRetries = 1
         options.onError = { reported.set($0) }
-        let view = try await totalsView.start(on: store, accumulator: acc, options: options)
+        let applied = Counter()
+        let view = try await observedView(applied).start(on: store, accumulator: acc, options: options)
         try await store.append([Counted(id: "a", num: 1)])
-        try await Task.sleep(for: .milliseconds(100))
+        try await applied.wait(for: 1)
         #expect(view.failure == nil)
 
         await view.close()
