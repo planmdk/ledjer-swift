@@ -165,22 +165,28 @@ public struct PersistedStateView<Operation: Sendable>: Sendable {
     ///
     /// Events are committed every `options.maxSize` events or
     /// `options.maxInterval`, whichever comes first. The returned handle
-    /// must be closed.
+    /// must be closed. If the view can't start, `start` closes the accumulator and throws.
     public func start<A: PersistedAccumulator>(
         on store: some EventStore,
         accumulator: A,
         options: PersistedViewOptions = .init()
     ) async throws -> PersistedViewHandle<A> where A.Operation == Operation {
-        let query = try query(for: bindings.map(\.selector))
-        let engine = PersistedViewEngine(
-            store: store,
-            routes: bindings.map { (selector: $0.selector, handler: $0.apply) },
-            query: query,
-            accumulator: accumulator,
-            options: options
-        )
-        try await engine.begin()
-        return PersistedViewHandle(engine)
+        // The accumulator is the view's from here on, also when the view doesn't get to start.
+        do {
+            let query = try query(for: bindings.map(\.selector))
+            let engine = PersistedViewEngine(
+                store: store,
+                routes: bindings.map { (selector: $0.selector, handler: $0.apply) },
+                query: query,
+                accumulator: accumulator,
+                options: options
+            )
+            try await engine.begin()
+            return PersistedViewHandle(engine)
+        } catch {
+            await accumulator.close()
+            throw error
+        }
     }
 }
 
@@ -385,7 +391,10 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
         let inbox = Inbox<Message>(capacity: options.maxSize)
         let pump = Task.detached {
             do {
-                for try await event in stream { await inbox.send(.event(event)) }
+                // Once the worker has closed the inbox nobody reads: stop reading the log too.
+                for try await event in stream {
+                    if !(await inbox.send(.event(event))) { return }
+                }
                 await inbox.send(.subscriptionEnded(nil))
             } catch {
                 await inbox.send(.subscriptionEnded(error))

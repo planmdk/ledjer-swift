@@ -521,6 +521,8 @@ struct ScriptedSubscriptions: EventStore {
         /// The stream waits for events, and when its consumer is cancelled it throws `CancellationError`
         /// instead of finishing, as a store that is reading when the cancellation lands might.
         case failsWhenCancelled
+        /// `subscribe` itself throws.
+        case subscribeThrows
     }
 
     struct Boom: Error {}
@@ -541,6 +543,8 @@ struct ScriptedSubscriptions: EventStore {
             return AsyncThrowingStream { $0.finish() }
         case .fails:
             return AsyncThrowingStream { $0.finish(throwing: Boom()) }
+        case .subscribeThrows:
+            throw Boom()
         case .failsWhenCancelled:
             return AsyncThrowingStream(unfolding: {
                 try await Task.sleep(for: .seconds(30))
@@ -556,6 +560,18 @@ struct ScriptedSubscriptions: EventStore {
 }
 
 @Suite struct PersistedViewFailurePathTests {
+    /// The accumulator is the view's once passed to `start`: a view that can't start closes it.
+    @Test func aViewThatCannotStartClosesTheAccumulator() async throws {
+        let acc = TotalsAccumulator()
+        do {
+            _ = try await totalsView.start(on: ScriptedSubscriptions(script: .subscribeThrows), accumulator: acc)
+            Issue.record("expected start to throw")
+        } catch PersistedViewError.subscribe(_, let underlying) {
+            #expect(underlying is ScriptedSubscriptions.Boom)
+        }
+        #expect(await acc.closed)
+    }
+
     @Test func aSubscriptionThatEndsFailsTheView() async throws {
         for script in [ScriptedSubscriptions.Script.endsCleanly, .fails] {
             let store = ScriptedSubscriptions(script: script)

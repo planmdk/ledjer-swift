@@ -48,12 +48,12 @@ import Testing
 
     @Test func closingReleasesBlockedSendersAndEndsTheReceiver() async throws {
         let inbox = Inbox<Int>(capacity: 1)
-        await inbox.send(1)
+        #expect(await inbox.send(1))
         let blocked = Task { await inbox.send(2) }
         try await Task.sleep(for: .milliseconds(20))
         inbox.close()
-        await blocked.value  // released, not hanging
-        await inbox.send(3)  // dropped
+        #expect(await blocked.value == false)  // released, not hanging, and told that it was dropped
+        #expect(await inbox.send(3) == false)  // dropped
         inbox.post(4)  // dropped
         #expect(await inbox.receive() == 1)  // what was queued is still delivered
         #expect(await inbox.receive() == nil)

@@ -21,7 +21,7 @@ final class Inbox<Message: Sendable>: @unchecked Sendable {
     private let capacity: Int
     private var control: [Message] = []
     private var data: [Message] = []
-    private var blocked: [(message: Message, sender: CheckedContinuation<Void, Never>)] = []
+    private var blocked: [(message: Message, sender: CheckedContinuation<Bool, Never>)] = []
     private var receiver: CheckedContinuation<Message?, Never>?
     private var closed = false
 
@@ -46,23 +46,25 @@ final class Inbox<Message: Sendable>: @unchecked Sendable {
         }
     }
 
-    /// Queues a data message, waiting for room.
-    func send(_ message: Message) async {
-        await withCheckedContinuation { (sender: CheckedContinuation<Void, Never>) in
+    /// Queues a data message, waiting for room. Returns `false` if the inbox is closed, before or while
+    /// waiting: the message is dropped, and a producer has no reason to go on.
+    @discardableResult
+    func send(_ message: Message) async -> Bool {
+        await withCheckedContinuation { (sender: CheckedContinuation<Bool, Never>) in
             lock.lock()
             if closed {
                 lock.unlock()
-                sender.resume()
+                sender.resume(returning: false)
             } else if let waiting = receiver {
                 // A waiting receiver means both queues are empty.
                 receiver = nil
                 lock.unlock()
                 waiting.resume(returning: message)
-                sender.resume()
+                sender.resume(returning: true)
             } else if data.count < capacity {
                 data.append(message)
                 lock.unlock()
-                sender.resume()
+                sender.resume(returning: true)
             } else {
                 blocked.append((message, sender))
                 lock.unlock()
@@ -82,14 +84,14 @@ final class Inbox<Message: Sendable>: @unchecked Sendable {
             } else if !data.isEmpty {
                 let message = data.removeFirst()
                 // Room for the longest-blocked sender.
-                var released: CheckedContinuation<Void, Never>?
+                var released: CheckedContinuation<Bool, Never>?
                 if !blocked.isEmpty {
                     let next = blocked.removeFirst()
                     data.append(next.message)
                     released = next.sender
                 }
                 lock.unlock()
-                released?.resume()
+                released?.resume(returning: true)
                 continuation.resume(returning: message)
             } else if closed {
                 lock.unlock()
@@ -109,7 +111,7 @@ final class Inbox<Message: Sendable>: @unchecked Sendable {
         let waiting = receiver
         receiver = nil
         lock.unlock()
-        senders.forEach { $0.sender.resume() }
+        senders.forEach { $0.sender.resume(returning: false) }
         waiting?.resume(returning: nil)
     }
 }
