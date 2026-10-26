@@ -225,7 +225,15 @@ them is fenced off with a `PersistedAccumulatorConflict`, and if it is the new o
 ## Testing
 
 `LedjerStoreContract` holds framework-agnostic contract checks that any `EventStore` must pass;
-the in-memory and GRDB stores both run them. `EventStore.lastPosition(matching:through:)` has a default
+the in-memory and GRDB stores both run them. It is a product of its own, so that the tests of a
+third-party store can too (it is never built for apps that don't import it):
+
+```swift
+import LedjerStoreContract
+@Test func contract() async throws { try await StoreContract.all { MyStore() } }
+```
+
+`EventStore.lastPosition(matching:through:)` has a default
 implementation that reads the events; stores should override it (the GRDB store does, with one index lookup).
 
 No Swift toolchain on the machine? `./swift.sh test` runs `swift test` in a container

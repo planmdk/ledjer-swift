@@ -12,6 +12,8 @@ let package = Package(
         .library(name: "Ledjer", targets: ["Ledjer"]),
         // GRDB (SQLite) event store and accumulator. Pulls in GRDB.
         .library(name: "LedjerGRDB", targets: ["LedjerGRDB"]),
+        // Contract checks that any EventStore must pass, for the test targets of third-party stores.
+        .library(name: "LedjerStoreContract", targets: ["LedjerStoreContract"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.5.0"),
@@ -25,7 +27,7 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
-        // Shared, framework-agnostic store contract checks. Not a product.
+        // Framework-agnostic store contract checks, shared by the tests here and published as a product.
         .target(name: "LedjerStoreContract", dependencies: ["Ledjer"]),
         .testTarget(
             name: "LedjerTests",
