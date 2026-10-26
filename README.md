@@ -81,6 +81,9 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
 - **Reducers of persisted views are pure**: they return `[Operation]` instead of calling `-tx-append`
   on the accumulator, and `commit(_:through:)` receives the batch. A failed commit is retried with the
   same batch. `-reset` is not ported (nothing calls it); see `GRDBAccumulator.clearCheckpoint`.
+- **Cancellation is not an error.** Stopping an automation, or cancelling a subscription's consumer, ends
+  things cleanly: no `CancellationError` reaches `onError`, and a cancelled GRDB subscription finishes like
+  an in-memory one.
 - **Automations** report a throwing body to `onError` and keep running. In Clojure a throwing body
   silently ends the go-loop. A failing event subscription is reported and stops the automation
   (`isRunning`). `automation` returns a handle that stops the automation on `stop()` or when dropped.
@@ -89,7 +92,12 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
 - **Persisted views** keep Clojure's `close()` semantics: stop has priority over queued events, so
   closing commits only what was already applied (the rest is left for the next run, which resumes
   after the checkpoint), waits for the worker at most `closeTimeout` (5 s), and then closes the accumulator.
-  Concurrent closes share one shutdown. A view whose handle is dropped shuts itself down. After
+  Concurrent closes share one shutdown. If the worker doesn't stop within the timeout (a stuck commit),
+  `close()` cancels it and returns: it starts no further commit, and a commit already in flight is fenced
+  (`PersistedAccumulator.commit(_:after:through:)` carries the checkpoint the view last saw, and
+  `GRDBAccumulator` throws a non-retried `PersistedAccumulatorConflict` if the stored one differs), so a
+  restarted view and a stale one can't both apply an event. (Clojure leaves such a worker running.)
+  A view whose handle is dropped shuts itself down. After
   `close()`, `awaitPosition` and `accumulator()` throw `PersistedViewError.closed`; a failure of the
   final commit doesn't throw from `close()`, see `handle.failure` and `options.onError`.
 - **Subscriptions** are `AsyncThrowingStream`s. Ending the iteration cancels them. The GRDB store reads
