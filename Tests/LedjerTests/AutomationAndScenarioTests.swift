@@ -127,6 +127,54 @@ private func reactImmediately(_ store: any EventStore) async throws -> Automatio
         third.stop()
     }
 
+    @Test func aSlowBodyDoesNotBuildABacklogOfPeriodicTicks() async throws {
+        let runs = Counter()
+        let slow = Flag(true)
+        let running = try await automation(
+            on: InMemoryEventStore(),
+            triggers: [.periodic(every: .milliseconds(10))]
+        ) { _ in
+            runs.increment()
+            if slow.value { try? await Task.sleep(for: .milliseconds(100)) }
+        }
+        try await Task.sleep(for: .milliseconds(500))  // 50 ticks go by, while the body can do 5 runs
+        slow.value = false
+        let before = runs.value
+        #expect(before < 10, "runs while slow: \(before)")
+        try await Task.sleep(for: .milliseconds(60))
+        // Fast again: the next 6 ticks and the one that was waiting, not the 45 that were missed.
+        #expect(runs.value - before < 14, "runs in the 60 ms after: \(runs.value - before)")
+        running.stop()
+    }
+
+    @Test func aSlowBodyDoesNotBuildABacklogOfSignals() async throws {
+        let runs = Counter()
+        let (signal, continuation) = AsyncStream<Void>.makeStream()
+        let running = try await automation(on: InMemoryEventStore(), triggers: [.signal { signal }]) { _ in
+            runs.increment()
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        continuation.yield()
+        try await runs.wait(for: 1)
+        for _ in 0..<100 { continuation.yield() }  // while the first run is busy
+        try await Task.sleep(for: .milliseconds(500))
+        // The first run, plus the one more that the 100 signals amount to.
+        #expect(runs.value == 2, "runs: \(runs.value)")
+        running.stop()
+    }
+
+    @Test func everyEventIsARunEvenWhenTheBodyIsSlow() async throws {
+        let store = InMemoryEventStore()
+        let runs = Counter()
+        let running = try await automation(on: store, triggers: [.event(Counted.self)]) { _ in
+            runs.increment()
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        try await store.append((0..<5).map { Counted(id: "a", num: $0) })
+        try await runs.wait(for: 5)
+        running.stop()
+    }
+
     @Test func periodicTicksStartWithTheAutomation() async throws {
         let trigger = Trigger.periodic(every: .milliseconds(10))
         try await Task.sleep(for: .milliseconds(200))  // time passes while the trigger exists
@@ -350,5 +398,15 @@ private struct FailingSubscriptions: EventStore {
         #expect(running.isRunning)
         running.stop()
         #expect(!running.isRunning)
+    }
+}
+
+final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: Bool
+    init(_ value: Bool) { _value = value }
+    var value: Bool {
+        get { lock.withLock { _value } }
+        set { lock.withLock { _value = newValue } }
     }
 }

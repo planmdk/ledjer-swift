@@ -47,15 +47,37 @@ public enum AutomationError: Error, CustomStringConvertible {
     }
 }
 
+/// Lets a periodic or signal trigger leave at most one run waiting for the body, however slow it is.
+///
+/// Event triggers don't use it: each event is a run, as in Clojure. A periodic tick or a signal says
+/// "run now", which one pending run says just as well as a hundred, and an unbounded backlog of
+/// them would run back to back, and grow, for as long as the body is slow.
+final class TickGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending = false
+
+    /// Whether a tick should be passed on: not while an earlier one still waits.
+    func arm() -> Bool {
+        lock.withLock {
+            if pending { return false }
+            pending = true
+            return true
+        }
+    }
+
+    /// The pending tick is being served: the next one is a new one.
+    func clear() { lock.withLock { pending = false } }
+}
+
 /// A running automation. Keep the handle for as long as it should run: it stops
 /// when stopped with `stop()`, when its event subscription fails, or when the handle is dropped.
 public final class Automation: @unchecked Sendable {
     private let lock = NSLock()
     private var tasks: [Task<Void, Never>] = []
     private var running = true
-    private let signals: AsyncStream<Void>.Continuation
+    private let signals: AsyncStream<TickGate?>.Continuation
 
-    init(signals: AsyncStream<Void>.Continuation) {
+    init(signals: AsyncStream<TickGate?>.Continuation) {
         self.signals = signals
     }
 
@@ -87,13 +109,15 @@ public final class Automation: @unchecked Sendable {
 /// Starts an automation: whenever a trigger fires, `body` runs with the event store.
 ///
 /// The body typically reads state views and appends events. Runs of the
-/// body never overlap. Subscriptions are in place when this returns, so
+/// body never overlap. Each event of an event trigger is a run. Periodic and
+/// signal triggers coalesce: ticks that arrive while the body is busy (or while
+/// a run is already waiting) make one more run, not one each. Subscriptions are in place when this returns, so
 /// events appended afterwards trigger the automation.
 ///
 /// A body that throws is reported to `onError`, and the automation keeps
 /// running. Errors that come of the automation being stopped, a body or a
-/// subscription cancelled in flight, are not reported. If an event subscription fails, the failure is reported to
-/// `onError` and the whole automation stops (`isRunning` becomes `false`),
+/// subscription cancelled in flight, are not reported. If an event subscription fails, or ends, that is
+/// reported to `onError` and the whole automation stops (`isRunning` becomes `false`),
 /// rather than carrying on deaf to some of its triggers.
 public func automation(
     on store: some EventStore,
@@ -101,7 +125,7 @@ public func automation(
     onError: @escaping @Sendable (any Error) -> Void = { _ in },
     body: @escaping @Sendable (any EventStore) async throws -> Void
 ) async throws -> Automation {
-    let (signals, fire) = AsyncStream<Void>.makeStream()
+    let (signals, fire) = AsyncStream<TickGate?>.makeStream()
     let handle = Automation(signals: fire)
     do {
         for trigger in triggers {
@@ -110,7 +134,7 @@ public func automation(
                 let stream = try await store.subscribe(query, startPosition: nil)
                 handle.add(Task { [weak handle] in
                     do {
-                        for try await _ in stream { fire.yield() }
+                        for try await _ in stream { fire.yield(nil) }
                         // The stream is over without anyone having stopped us: this trigger would never fire again.
                         if Task.isCancelled { return }
                         onError(AutomationError.subscriptionEnded)
@@ -125,15 +149,17 @@ public func automation(
                 })
             case .signal(let make):
                 let stream = make()
+                let gate = TickGate()
                 handle.add(Task {
-                    for await _ in stream { fire.yield() }
+                    for await _ in stream where gate.arm() { fire.yield(gate) }
                 })
             case .periodic(let interval):
+                let gate = TickGate()
                 handle.add(Task {
                     while !Task.isCancelled {
                         try? await Task.sleep(for: interval)
                         if Task.isCancelled { break }
-                        fire.yield()
+                        if gate.arm() { fire.yield(gate) }
                     }
                 })
             }
@@ -144,8 +170,9 @@ public func automation(
     }
     let anyStore: any EventStore = store
     handle.add(Task {
-        for await _ in signals {
+        for await gate in signals {
             if Task.isCancelled { break }
+            gate?.clear()  // ticks that come while the body runs make one more run, not one each
             do {
                 try await body(anyStore)
             } catch {
