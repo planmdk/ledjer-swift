@@ -10,23 +10,23 @@ private let failingView = PersistedStateView<Add>(bindings: [
     .on(Counted.self) { _ in throw Marker() },
 ])
 
-/// Runs `body` with standard error redirected into a pipe, and returns what was written to it.
-/// Only for tests that don't run in parallel with others that write to standard error.
+/// Runs `body` with `ErrorReporter.standardError` writing to a file, and returns what was written.
+/// Other tests running meanwhile may write there too if they fail with the default `onError`: look
+/// for what is unique to the test.
 private func captureStandardError(_ body: () async throws -> Void) async throws -> String {
-    let pipe = Pipe()
-    let saved = dup(STDERR_FILENO)
-    dup2(pipe.fileHandleForWriting.fileDescriptor, STDERR_FILENO)
-    do {
-        try await body()
-    } catch {
-        dup2(saved, STDERR_FILENO)
-        close(saved)
-        throw error
+    let url = URL(fileURLWithPath: NSTemporaryDirectory() + "ledjer-stderr-\(UUID().uuidString)")
+    FileManager.default.createFile(atPath: url.path, contents: nil)
+    let file = try FileHandle(forWritingTo: url)
+    let saved = ErrorReporter.standardErrorHandle
+    ErrorReporter.standardErrorHandle = file
+    defer {
+        ErrorReporter.standardErrorHandle = saved
+        try? file.close()
+        try? FileManager.default.removeItem(at: url)
     }
-    dup2(saved, STDERR_FILENO)
-    close(saved)
-    try pipe.fileHandleForWriting.close()
-    return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    try await body()
+    try file.synchronize()
+    return String(decoding: try Data(contentsOf: url), as: UTF8.self)
 }
 
 @Suite struct ErrorReporterTests {
@@ -63,7 +63,7 @@ private func captureStandardError(_ body: () async throws -> Void) async throws 
             try await Task.sleep(for: .milliseconds(100))
             await view.close()
         }
-        #expect(output.contains("ledjer:"), "got: \(output)")
+        #expect(output.contains("ledjer: Persisted view reducer failed on ledjer-test/counted at 1: ReportedMarker"), "got: \(output)")
     }
 
     @Test func aFailedAutomationBodyReportsByDefault() async throws {
@@ -84,7 +84,7 @@ private func captureStandardError(_ body: () async throws -> Void) async throws 
                 Issue.record("expected the scenario to throw")
             } catch is PersistedViewError {}
         }
-        #expect(!output.contains("ledjer:"), "got: \(output)")
+        #expect(!output.contains("ReportedMarker"), "got: \(output)")
     }
 }
 #endif

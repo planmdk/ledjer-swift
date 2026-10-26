@@ -25,7 +25,18 @@ public enum ErrorReporter {
 
     /// Writes `ledjer: <error>` to standard error.
     public static let standardError: @Sendable (any Error) -> Void = { error in
-        write(error, to: .standardError)
+        write(error, to: standardErrorHandle)
+    }
+
+    private static let handleLock = NSLock()
+    nonisolated(unsafe) private static var handle = FileHandle.standardError
+
+    /// What `standardError` writes to. Tests point it at a file: redirecting the process's own
+    /// descriptor would swallow the output of every test running in parallel, and block them once
+    /// whatever reads it falls behind.
+    static var standardErrorHandle: FileHandle {
+        get { handleLock.withLock { handle } }
+        set { handleLock.withLock { handle = newValue } }
     }
 
     /// `FileHandle.write(_: Data)` raises an Objective-C exception, which Swift can't catch, when the
