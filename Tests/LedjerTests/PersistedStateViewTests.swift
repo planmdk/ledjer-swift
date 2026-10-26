@@ -500,3 +500,105 @@ actor SlowAccumulator: PersistedAccumulator {
         #expect(reported.value != nil)
     }
 }
+
+/// A store whose subscriptions are scripted, over an in-memory store holding the events.
+private struct ScriptedSubscriptions: EventStore {
+    enum Script: Sendable {
+        /// The stream ends without an error.
+        case endsCleanly
+        /// The stream fails.
+        case fails
+        /// The stream has all of `events` ready at once, and `terminated` is raised when it is let go of.
+        case floods(events: [StoredEvent], terminated: Counter)
+    }
+
+    struct Boom: Error {}
+    let base = InMemoryEventStore()
+    let script: Script
+
+    func source(_ query: Query, startPosition: Position?) async throws -> [StoredEvent] {
+        try await base.source(query, startPosition: startPosition)
+    }
+
+    func append(_ events: [NewEvent], condition: AppendCondition?) async throws -> Position? {
+        try await base.append(events, condition: condition)
+    }
+
+    func subscribe(_ query: Query, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
+        switch script {
+        case .endsCleanly:
+            return AsyncThrowingStream { $0.finish() }
+        case .fails:
+            return AsyncThrowingStream { $0.finish(throwing: Boom()) }
+        case .floods(let events, let terminated):
+            return AsyncThrowingStream { continuation in
+                for event in events { continuation.yield(event) }
+                continuation.onTermination = { _ in terminated.increment() }
+            }
+        }
+    }
+}
+
+@Suite struct PersistedViewFailurePathTests {
+    @Test func aSubscriptionThatEndsFailsTheView() async throws {
+        for script in [ScriptedSubscriptions.Script.endsCleanly, .fails] {
+            let store = ScriptedSubscriptions(script: script)
+            try await store.append([Counted(id: "a", num: 1)])
+            let reported = ErrorBox()
+            var options = fastOptions()
+            options.onError = { reported.set($0) }
+            let view = try await totalsView.start(on: store, accumulator: TotalsAccumulator(), options: options)
+            do {
+                try await view.awaitPosition(1)
+                Issue.record("expected the subscription failure")
+            } catch PersistedViewError.subscribe(let start, let underlying) {
+                #expect(start == 0)
+                switch script {
+                case .endsCleanly: #expect(underlying == nil, "closed unexpectedly, without an error")
+                default: #expect(underlying is ScriptedSubscriptions.Boom)
+                }
+            }
+            #expect(reported.value != nil)
+            await view.close()
+        }
+    }
+
+    @Test func aWorkerThatFailsReleasesTheProducerBlockedOnAFullInbox() async throws {
+        struct Boom: Error {}
+        let events = try (1...100).map { n -> StoredEvent in
+            let new = try NewEvent(Counted(id: "a", num: n))
+            return StoredEvent(position: n, type: new.type, metadata: new.metadata, payload: new.payload)
+        }
+        let terminated = Counter()
+        let store = ScriptedSubscriptions(script: .floods(events: events, terminated: terminated))
+        try await store.append([Counted(id: "a", num: 1)])
+        let failing = PersistedStateView<Add>(bindings: [.on(Counted.self) { _ in throw Boom() }])
+        let view = try await failing.start(on: store, accumulator: TotalsAccumulator(), options: fastOptions(maxSize: 1))
+        try await eventually { view.failure != nil }
+        // The pump was blocked sending event 3 or so to a full inbox. If the failure didn't release
+        // it, it would hold the stream forever.
+        try await terminated.wait(for: 1)
+        await view.close()
+    }
+
+    @Test func aDroppedHandleWithAStuckWorkerStillShutsDownAndNeverCommitsLater() async throws {
+        let store = InMemoryEventStore()
+        let acc = SlowAccumulator(gated: true)
+        var options = fastOptions(maxSize: 1)
+        options.closeTimeout = .milliseconds(100)
+        weak var weakHandle: PersistedViewHandle<SlowAccumulator>?
+        func startAndDrop() async throws {
+            let view = try await totalsView.start(on: store, accumulator: acc, options: options)
+            weakHandle = view
+            try await store.append([Counted(id: "a", num: 1)])
+            try await eventually { await acc.commitsEntered == 1 }
+        }
+        try await startAndDrop()
+        try await eventually { await acc.closed }  // after the timeout
+        #expect(weakHandle == nil)
+
+        await acc.openGate()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await acc.commitCount == 0, "the stuck commit went through after the view was shut down")
+    }
+}
