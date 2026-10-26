@@ -110,7 +110,8 @@ public final class GRDBEventStore: EventStore {
         return AsyncThrowingStream(unfolding: { try await subscription.next() })
     }
 
-    /// The state of one subscription. A stream's `next` is only ever called one at a time, so no locking.
+    /// The state of one subscription. A stream has a single consumer, which calls `next` one at a time
+    /// (also after a cancellation, which just makes the next call return `nil`), so no locking.
     private final class Subscription: @unchecked Sendable {
         let writer: any DatabaseWriter
         let query: Query

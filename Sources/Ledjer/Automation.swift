@@ -114,7 +114,8 @@ public final class Automation: @unchecked Sendable {
 /// a run is already waiting) make one more run, not one each. Subscriptions are in place when this returns, so
 /// events appended afterwards trigger the automation.
 ///
-/// A body that throws is reported to `onError`, and the automation keeps
+/// A body that throws is reported to `onError` (by default written to standard
+/// error, see `ErrorReporter`), and the automation keeps
 /// running. Errors that come of the automation being stopped, a body or a
 /// subscription cancelled in flight, are not reported. If an event subscription fails, or ends, that is
 /// reported to `onError` and the whole automation stops (`isRunning` becomes `false`),
@@ -122,7 +123,7 @@ public final class Automation: @unchecked Sendable {
 public func automation(
     on store: some EventStore,
     triggers: [Trigger],
-    onError: @escaping @Sendable (any Error) -> Void = { _ in },
+    onError: @escaping @Sendable (any Error) -> Void = ErrorReporter.standardError,
     body: @escaping @Sendable (any EventStore) async throws -> Void
 ) async throws -> Automation {
     let (signals, fire) = AsyncStream<TickGate?>.makeStream()

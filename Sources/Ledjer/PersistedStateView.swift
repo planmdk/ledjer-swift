@@ -106,8 +106,9 @@ public struct PersistedViewOptions: Sendable {
     /// gives up waiting and closes the accumulator anyway.
     public var closeTimeout: Duration = .seconds(5)
     /// Called once, after the view has stopped on a failure. The failure is
-    /// also thrown by `accumulator()` and `awaitPosition`.
-    public var onError: (@Sendable (any Error) -> Void)?
+    /// also thrown by `accumulator()` and `awaitPosition`, and available as `failure`.
+    /// By default it is written to standard error (`ErrorReporter.standardError`); `nil` silences it.
+    public var onError: (@Sendable (any Error) -> Void)? = ErrorReporter.standardError
 
     public init() {}
 }
@@ -451,6 +452,7 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
                     let interval = options.maxInterval
                     timer = Task {
                         try? await Task.sleep(for: interval)
+                        if Task.isCancelled { return }  // a commit got there first
                         inbox.post(.flush(generation: current))
                     }
                 }

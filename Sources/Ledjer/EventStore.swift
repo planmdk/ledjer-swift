@@ -60,7 +60,8 @@ public protocol EventStore: Sendable {
     /// are delivered. With it, the matching events from that position
     /// (inclusive) on are delivered first, then new ones as they arrive.
     /// Events are delivered in order, each once. Ending the stream's
-    /// iteration (or cancelling its task) ends the subscription.
+    /// iteration (or cancelling its task) ends the subscription, cleanly: the stream
+    /// finishes without an error. A stream has a single consumer: iterate it from one task.
     func subscribe(_ query: Query, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error>
 
     /// Atomically appends `events`, subject to `condition`. Returns the

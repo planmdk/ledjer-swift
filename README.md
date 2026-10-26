@@ -52,7 +52,8 @@ let current = try await balance.run(on: store, where: [.payload("account"): .bou
 let readModel = PersistedStateView<GRDBOperation>(bindings: [
     .on(Deposited.self) { e in [GRDBOperation { db in /* upsert row */ }] },
 ])
-let view = try await readModel.start(on: store, accumulator: GRDBAccumulator(name: "balances", writer: dbPool))
+let accumulator = try await GRDBAccumulator.open(name: "balances", writer: dbPool)  // off the main thread
+let view = try await readModel.start(on: store, accumulator: accumulator)
 // ... and `await view.close()` when done (a dropped handle shuts the view down too)
 ```
 
@@ -84,9 +85,15 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
 - **Cancellation is not an error.** Stopping an automation, or cancelling a subscription's consumer, ends
   things cleanly: no `CancellationError` reaches `onError`, and a cancelled GRDB subscription finishes like
   an in-memory one.
+- **Failures are not silent by default.** `onError` of persisted views and automations defaults to
+  `ErrorReporter.standardError` (Clojure's failures end in the uncaught exception handler, which prints
+  them). Pass your own handler, or `nil` to a persisted view's options.
+- **A `CancellationError` thrown by an accumulator is a failure** like any other error. Only a
+  cancellation of the view's own worker (a `close()` that gave up waiting) ends it quietly.
 - **Automations** report a throwing body to `onError` and keep running. In Clojure a throwing body
-  silently ends the go-loop. A failing event subscription is reported and stops the automation
-  (`isRunning`). `automation` returns a handle that stops the automation on `stop()` or when dropped.
+  silently ends the go-loop. A failing event subscription, or one that ends, is reported and stops the
+  automation (`isRunning`). Periodic and signal ticks coalesce while the body is busy (one more run, not
+  one each), like Clojure's buffer-1 channel; each event of an event trigger is a run. `automation` returns a handle that stops the automation on `stop()` or when dropped.
   A `Trigger` is a description that each automation starts itself, so it can be shared;
   `Trigger.signal` takes a stream factory instead of a core.async channel.
 - **Persisted views** keep Clojure's `close()` semantics: stop has priority over queued events, so
@@ -97,6 +104,11 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
   (`PersistedAccumulator.commit(_:after:through:)` carries the checkpoint the view last saw, and
   `GRDBAccumulator` throws a non-retried `PersistedAccumulatorConflict` if the stored one differs), so a
   restarted view and a stale one can't both apply an event. (Clojure leaves such a worker running.)
+  A retry that finds the accumulator exactly at its position (the first attempt landed, its
+  acknowledgement didn't) counts as done. A custom accumulator should implement the fenced commit if
+  its commits can outlive a cancelled view: otherwise a stale commit that can't be called back may land
+  twice. And if it does land after a new view has started, it is the new view that is refused, and must
+  be restarted.
   A view whose handle is dropped shuts itself down. After
   `close()`, `awaitPosition` and `accumulator()` throw `PersistedViewError.closed`; a failure of the
   final commit doesn't throw from `close()`, see `handle.failure` and `options.onError`.
@@ -132,6 +144,52 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
   (not from other processes). Use a `DatabasePool`.
 - Tag matching is by the tags an event had *when appended*. Adding a tag to an event type doesn't
   retro-tag old events.
+
+## Backgrounding on iOS
+
+You don't need to do anything special for a database in the app's own container. With a database in a
+shared container (an app group, for a widget or extension) GRDB's `observesSuspensionNotifications`
+makes writes fail with `SQLITE_ABORT` while the app is suspended, so that iOS doesn't kill it for
+holding a lock on the file. A persisted view's commit then fails, and it fails for good after its
+retries: there's no telling how long a suspension lasts, so retrying wouldn't be a fix.
+
+Stop the views when the app goes to the background and start new ones when it is active again. That is
+cheap and exact: a new view resumes after the accumulator's checkpoint, and events appended meanwhile
+are picked up. Use `beginBackgroundTask` around the `close()` if it needs time to flush.
+
+```swift
+@MainActor final class Views {
+    private var balances: PersistedViewHandle<GRDBAccumulator>?
+
+    func start() async throws {
+        guard balances == nil else { return }
+        let accumulator = try await GRDBAccumulator.open(name: "balances", writer: pool)
+        var options = PersistedViewOptions()
+        options.onError = { [weak self] error in Task { @MainActor in self?.failed(error) } }
+        balances = try await readModel.start(on: store, accumulator: accumulator, options: options)
+    }
+
+    func stop() async {
+        let view = balances
+        balances = nil
+        await view?.close()
+    }
+
+    /// A view that failed anyway: restart it when the app is active.
+    private func failed(_ error: any Error) { /* log it, then `await stop()` and `try await start()` */ }
+}
+
+// In the App:
+.onChange(of: scenePhase) { phase in  // iOS 17+: { _, phase in
+    Task {
+        switch phase {
+        case .background: await views.stop()
+        case .active: try await views.start()
+        default: break
+        }
+    }
+}
+```
 
 ## Testing
 
