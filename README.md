@@ -139,6 +139,10 @@ or equal events can compare unequal.
 - **The GRDB store limits a query to 500 selectors** (see below); the in-memory store, like the Clojure
   one, has no such limit, and the store contract doesn't check it. A query that is fine in memory can
   throw `LedjerError.invalidQuery` against GRDB.
+- **A persisted view that fails to start closes its accumulator** before `start` throws. Clojure's
+  `persisted-view*` doesn't: the caller is left with an accumulator (a connection, say) to close, and
+  if it forgets, the accumulator leaks and its checkpoint stays held. In Swift the accumulator is the
+  view's from the moment `start` is called, whatever happens.
 - **Subscriptions** are `AsyncThrowingStream`s. Ending the iteration cancels them. The GRDB store reads
   the log as the consumer pulls (batches of 500), and a persisted view feeds its worker through a
   bounded queue, so a slow commit slows the reads down. The in-memory store pushes: it keeps every
