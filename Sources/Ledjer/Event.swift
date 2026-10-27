@@ -1,19 +1,24 @@
 import Foundation
 
 /// The unique name of an event type, e.g. `"orders/order-placed"`.
+///
+/// Names compare by their UTF-8 bytes, not by Unicode canonical equivalence (see `Scalar`).
 public struct EventType: Hashable, Sendable, ExpressibleByStringLiteral, CustomStringConvertible, Codable {
     public let rawValue: String
 
     public init(_ rawValue: String) { self.rawValue = rawValue }
     public init(stringLiteral value: String) { self.rawValue = value }
     public var description: String { rawValue }
+
+    public static func == (lhs: EventType, rhs: EventType) -> Bool { lhs.rawValue.isByteEqual(to: rhs.rawValue) }
+    public func hash(into hasher: inout Hasher) { rawValue.hashBytes(into: &hasher) }
 }
 
 /// Names a value that events can be selected by: a key in an event's
 /// payload or metadata.
 ///
 /// Tag paths are labels, not JSON paths. `TagPath.payload("id")` is whatever
-/// the event type's `EventTag` declares for `"id"`.
+/// the event type's `EventTag` declares for `"id"`. Keys compare by their UTF-8 bytes (see `Scalar`).
 public struct TagPath: Hashable, Sendable, CustomStringConvertible {
     public enum Source: String, Hashable, Sendable {
         case payload
@@ -32,6 +37,15 @@ public struct TagPath: Hashable, Sendable, CustomStringConvertible {
     public static func metadata(_ key: String) -> TagPath { .init(source: .metadata, key: key) }
 
     public var description: String { "\(source.rawValue).\(key)" }
+
+    public static func == (lhs: TagPath, rhs: TagPath) -> Bool {
+        lhs.source == rhs.source && lhs.key.isByteEqual(to: rhs.key)
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(source)
+        key.hashBytes(into: &hasher)
+    }
 }
 
 /// Declares one tag of an event type: how to read the tag value from an

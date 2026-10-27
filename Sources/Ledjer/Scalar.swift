@@ -4,11 +4,41 @@ import Foundation
 ///
 /// Scalars compare by type *and* value, so `.string("1")` never equals
 /// `.int(1)`, and a UUID never equals its string representation.
+///
+/// Strings compare by their UTF-8 bytes, not by Unicode canonical equivalence as Swift's `String` does, so
+/// `.string("café")` (precomposed) differs from `.string("cafe\u{301}")`, as in the Clojure library and the GRDB store.
 public enum Scalar: Hashable, Sendable {
     case string(String)
     case int(Int)
     case bool(Bool)
     case uuid(UUID)
+
+    public static func == (lhs: Scalar, rhs: Scalar) -> Bool {
+        switch (lhs, rhs) {
+        case (.string(let a), .string(let b)): a.isByteEqual(to: b)
+        case (.int(let a), .int(let b)): a == b
+        case (.bool(let a), .bool(let b)): a == b
+        case (.uuid(let a), .uuid(let b)): a == b
+        default: false
+        }
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        switch self {
+        case .string(let v):
+            hasher.combine(0)
+            v.hashBytes(into: &hasher)
+        case .int(let v):
+            hasher.combine(1)
+            hasher.combine(v)
+        case .bool(let v):
+            hasher.combine(2)
+            hasher.combine(v)
+        case .uuid(let v):
+            hasher.combine(3)
+            hasher.combine(v)
+        }
+    }
 }
 
 extension Scalar {
@@ -72,4 +102,8 @@ extension UUID: ScalarConvertible { public var scalar: Scalar { .uuid(self) } }
 extension Scalar: ScalarConvertible { public var scalar: Scalar { self } }
 
 /// Event metadata. Ledjer adds `version` to every event's metadata.
+///
+/// A plain dictionary, so its *keys* are Swift strings: canonically equivalent spellings of a key are one key
+/// (they never take part in matching, but `EventTag.metadata(_:)` looks its key up here). The same
+/// goes for every store, since tags are computed before an event reaches it. Values are `Scalar`s, which are exact.
 public typealias Metadata = [String: Scalar]

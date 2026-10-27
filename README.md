@@ -77,6 +77,10 @@ or equal events can compare unequal.
   constructed (`try Query.of(...)`), so stores never see an invalid one.
 - **Tag values are typed**: `String`, `Int`, `Bool`, `UUID`, compared by type and value. The `"*"`
   wildcard string is `.any`.
+- **Strings match by their UTF-8 bytes**, as in Clojure and the GRDB store, not by Unicode canonical
+  equivalence as Swift's `String ==` does: tag values, tag names and event types written as the precomposed
+  "café" and as "cafe\u{301}" are different. (`Metadata` keys are the exception: a plain dictionary,
+  where such spellings are one key, in every store alike.)
 - **No event versioning machinery.** `version` is recorded in metadata (and can be tagged), as in
   Clojure, but evolving an event means adding a new event type and binding it in the views.
 - **`AppendCondition.after` is exclusive** (matching UmaDB and the DCB spec): the append fails if a

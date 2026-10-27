@@ -67,6 +67,38 @@ struct TestEvent2: Event {
         #expect(byType["contract/order-noted"] == [:])
     }
 
+    /// Swift's `String` equates canonically equivalent spellings; queries must not.
+    @Test func spellingsOfTheSameTextAreNotDeduplicated() throws {
+        let (nfc, nfd) = ("caf\u{e9}", "cafe\u{301}")
+        #expect(nfc == nfd)  // what Swift thinks; and what the types below don't
+
+        #expect(Set([Scalar.string(nfc), .string(nfd)]).count == 2)
+        #expect(Set([EventType(nfc), EventType(nfd)]).count == 2)
+        #expect(Set([TagPath.payload(nfc), .payload(nfd)]).count == 2)
+        #expect([TagPath.payload(nfc): 1][.payload(nfd)] == nil)
+        #expect(Scalar.string(nfc) == Scalar.string(String(nfc)))
+
+        let name = TagPath.payload("name")
+        let query = Query([
+            try QueryItem([StoreContract.StringTagged.self], where: [name: .bound(nfc)]),
+            try QueryItem([StoreContract.StringTagged.self], where: [name: .bound(nfd)]),
+        ])
+        #expect(query.items.count == 2)
+        #expect(query.selectors.count == 2)
+        #expect(query.matches(type: "contract/string-tagged", tags: [name: .string(nfc)]))
+        #expect(query.matches(type: "contract/string-tagged", tags: [name: .string(nfd)]))
+        let onlyNFC = try Query.of(StoreContract.StringTagged.self, where: [name: .bound(nfc)])
+        #expect(!onlyNFC.matches(type: "contract/string-tagged", tags: [name: .string(nfd)]))
+        #expect(!onlyNFC.matches(type: EventType("contract/string-tagged"), tags: [TagPath.payload(nfc): .string(nfc)]))
+
+        let types = try Query.of(StoreContract.NFCType.self, StoreContract.NFDType.self)
+        #expect(types.selectors.count == 2)
+        #expect(!(try Query.of(StoreContract.NFCType.self)).matches(type: StoreContract.NFDType.eventType, tags: [:]))
+
+        let keys = try Query.of(StoreContract.NormalizedKeys.self, where: [.payload(nfc): "1", .payload(nfd): "2"])
+        #expect(keys.selectors.first?.required.count == 2)
+    }
+
     @Test func matching() throws {
         let id = UUID()
         let query = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(id), .payload("customer"): .any])

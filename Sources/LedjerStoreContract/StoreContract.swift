@@ -28,6 +28,7 @@ public enum StoreContract {
         try await metadataRoundTrips(makeStore)
         try await intAndBoolTags(makeStore)
         try await nulCharactersAreSignificant(makeStore)
+        try await unicodeNormalizationIsSignificant(makeStore)
         try await appendConditions(makeStore)
         try await failedConditionalAppendsAreNotDelivered(makeStore)
         try await concurrentConditionalAppendsAreAtomic(makeStore)
@@ -197,15 +198,15 @@ public enum StoreContract {
 
         // Tag values.
         let store = try await makeStore()
-        try await store.append([NulTagged(name: "alice" + nul + "evil")])  // 1
+        try await store.append([StringTagged(name: "alice" + nul + "evil")])  // 1
         func positions(_ value: String) async throws -> [Position] {
-            try await store.source(Query.of(NulTagged.self, where: [name: .bound(value)])).map(\.position)
+            try await store.source(Query.of(StringTagged.self, where: [name: .bound(value)])).map(\.position)
         }
         func fails(_ value: String) async throws -> Bool {
             do {
                 try await store.append(
-                    [NulTagged(name: "unrelated")],
-                    condition: AppendCondition(query: try Query.of(NulTagged.self, where: [name: .bound(value)])))
+                    [StringTagged(name: "unrelated")],
+                    condition: AppendCondition(query: try Query.of(StringTagged.self, where: [name: .bound(value)])))
                 return false
             } catch LedjerError.appendConditionFailed {
                 return true
@@ -220,7 +221,7 @@ public enum StoreContract {
         let wholeFails = try await fails("alice" + nul + "evil")
         try check(wholeFails, "a condition on \"alice\\0evil\" fails")
         // 2 is the unrelated event appended by the passing condition above, 3 the next one.
-        try await store.append([NulTagged(name: "alice"), NulTagged(name: "alice" + nul), NulTagged(name: "")])  // 3, 4, 5
+        try await store.append([StringTagged(name: "alice"), StringTagged(name: "alice" + nul), StringTagged(name: "")])  // 3, 4, 5
         let alice = try await positions("alice")
         try check(alice == [3], "\"alice\" and \"alice\\0evil\" coexist: \(alice)")
         let trailing = try await positions("alice" + nul)
@@ -231,16 +232,16 @@ public enum StoreContract {
         try check(other.isEmpty, "a different suffix after the NUL: \(other)")
         let both = try await store.source(
             Query([
-                try QueryItem([NulTagged.self], where: [name: .bound("alice")]),
-                try QueryItem([NulTagged.self], where: [name: .bound("alice" + nul + "evil")]),
+                try QueryItem([StringTagged.self], where: [name: .bound("alice")]),
+                try QueryItem([StringTagged.self], where: [name: .bound("alice" + nul + "evil")]),
             ])
         ).map(\.position)
         try check(both == [1, 3], "a query for both: \(both)")
         let last = try await store.lastPosition(
-            matching: Query.of(NulTagged.self, where: [name: .bound("alice")]), through: 5)
+            matching: Query.of(StringTagged.self, where: [name: .bound("alice")]), through: 5)
         try check(last == 3, "lastPosition: \(String(describing: last))")
-        let decoded = try await store.source(Query.of(NulTagged.self, where: [name: .bound("alice" + nul + "evil")]))
-            .map { try $0.decode(NulTagged.self).name }
+        let decoded = try await store.source(Query.of(StringTagged.self, where: [name: .bound("alice" + nul + "evil")]))
+            .map { try $0.decode(StringTagged.self).name }
         try check(decoded == ["alice" + nul + "evil"], "the payload keeps the NUL")
 
         // Tag names: two tags of one event whose names differ only after a NUL.
@@ -265,6 +266,73 @@ public enum StoreContract {
         try check(long == [2], "event type \"contract/nul\\0long\": \(long)")
         let longEvents = try await types.source(Query.of(NulTypeLong.self))
         try check(longEvents.map(\.type) == [NulTypeLong.eventType], "the stored type keeps the NUL")
+    }
+
+    /// Strings are equal when their UTF-8 bytes are, not when they are canonically equivalent, as Swift's `String`
+    /// has it: the precomposed "café" (U+00E9) and "cafe\u{301}" are different tag values, tag names and event types.
+    public static func unicodeNormalizationIsSignificant(_ makeStore: StoreFactory) async throws {
+        let (nfc, nfd) = ("caf\u{e9}", "cafe\u{301}")
+        try check(nfc.utf8.count != nfd.utf8.count, "the two spellings differ in bytes")
+        let name = TagPath.payload("name")
+
+        // Tag values.
+        let store = try await makeStore()
+        try await store.append([StringTagged(name: nfc)])  // 1
+        func positions(_ value: String) async throws -> [Position] {
+            try await store.source(Query.of(StringTagged.self, where: [name: .bound(value)])).map(\.position)
+        }
+        let early = try await positions(nfd)
+        try check(early.isEmpty, "NFD doesn't match NFC: \(early)")
+        let passed = try await store.append(
+            [StringTagged(name: nfd)],  // 2
+            condition: AppendCondition(query: try Query.of(StringTagged.self, where: [name: .bound(nfd)])))
+        try check(passed == 2, "a condition on NFD passes when only NFC exists: \(String(describing: passed))")
+        let failedOnNFC: Bool
+        do {
+            try await store.append(
+                [StringTagged(name: "x")],
+                condition: AppendCondition(query: try Query.of(StringTagged.self, where: [name: .bound(nfc)])))
+            failedOnNFC = false
+        } catch LedjerError.appendConditionFailed {
+            failedOnNFC = true
+        }
+        try check(failedOnNFC, "a condition on NFC fails when NFC exists")
+        let (onlyNFC, onlyNFD) = (try await positions(nfc), try await positions(nfd))
+        try check(onlyNFC == [1] && onlyNFD == [2], "both coexist: NFC \(onlyNFC), NFD \(onlyNFD)")
+        let both = try await store.source(
+            Query([
+                try QueryItem([StringTagged.self], where: [name: .bound(nfc)]),
+                try QueryItem([StringTagged.self], where: [name: .bound(nfd)]),
+            ])
+        ).map(\.position)
+        try check(both == [1, 2], "a query with both forms returns both: \(both)")
+        let last = try await store.lastPosition(
+            matching: Query.of(StringTagged.self, where: [name: .bound(nfc)]), through: 2)
+        try check(last == 1, "lastPosition: \(String(describing: last))")
+        let names = try await store.source(Query.of(StringTagged.self)).map { try $0.decode(StringTagged.self).name }
+        try check(
+            names.count == 2 && names[0].utf8.elementsEqual(nfc.utf8) && names[1].utf8.elementsEqual(nfd.utf8),
+            "the payloads keep their spelling")
+
+        // Tag names: two tags of one event that differ only in normalization.
+        let keys = try await makeStore()
+        try await keys.append([NormalizedKeys(precomposed: "1", decomposed: "2")])
+        func keyed(_ key: String, _ value: String) async throws -> [Position] {
+            try await keys.source(Query.of(NormalizedKeys.self, where: [.payload(key): .bound(value)])).map(\.position)
+        }
+        let a = try await keyed(nfc, "1")
+        let b = try await keyed(nfd, "2")
+        let crossed = try await keyed(nfc, "2") + keyed(nfd, "1")
+        try check(a == [1] && b == [1] && crossed.isEmpty, "tag names: \(a) \(b) \(crossed)")
+
+        // Event types.
+        let types = try await makeStore()
+        try await types.append([NFCType(), NFDType(), NFCType()])
+        let precomposed = try await types.source(Query.of(NFCType.self)).map(\.position)
+        let decomposed = try await types.source(Query.of(NFDType.self)).map(\.position)
+        try check(precomposed == [1, 3] && decomposed == [2], "event types: \(precomposed) \(decomposed)")
+        let bothTypes = try await types.source(Query.of(NFCType.self, NFDType.self)).map(\.position)
+        try check(bothTypes == [1, 2, 3], "a query for both types: \(bothTypes)")
     }
 
     /// A conditional append that fails is never seen by subscribers: they get the events of the
@@ -641,8 +709,8 @@ extension StoreContract {
     }
 
     /// A string tag, for values with characters that strings are easily mishandled by.
-    public struct NulTagged: Event {
-        public static let eventType: EventType = "contract/nul-tagged"
+    public struct StringTagged: Event {
+        public static let eventType: EventType = "contract/string-tagged"
         public static var tags: [EventTag<Self>] { [EventTag("name", \.name)] }
         public var name: String
         public init(name: String) { self.name = name }
@@ -665,6 +733,28 @@ extension StoreContract {
     /// Its type differs from `NulTypeShort`'s only after a NUL.
     public struct NulTypeLong: Event {
         public static let eventType: EventType = "contract/nul\u{0}long"
+        public init() {}
+    }
+
+    /// Two tags whose names are canonically equivalent but not byte-equal ("café", precomposed and decomposed).
+    public struct NormalizedKeys: Event {
+        public static let eventType: EventType = "contract/normalized-keys"
+        public static var tags: [EventTag<Self>] {
+            [EventTag("caf\u{e9}", \.precomposed), EventTag("cafe\u{301}", \.decomposed)]
+        }
+        public var precomposed: String
+        public var decomposed: String
+        public init(precomposed: String, decomposed: String) { (self.precomposed, self.decomposed) = (precomposed, decomposed) }
+    }
+
+    public struct NFCType: Event {
+        public static let eventType: EventType = "contract/caf\u{e9}"
+        public init() {}
+    }
+
+    /// Its type is canonically equivalent to `NFCType`'s, but not byte-equal.
+    public struct NFDType: Event {
+        public static let eventType: EventType = "contract/cafe\u{301}"
         public init() {}
     }
 

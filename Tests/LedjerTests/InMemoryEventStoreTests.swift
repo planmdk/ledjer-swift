@@ -38,6 +38,10 @@ private struct RacyStore: EventStore {
     @Test func sourceSelectsByTags() async throws { try await StoreContract.sourceSelectsByTagsOfTheEventsType(Self.make) }
     @Test func metadataRoundTrips() async throws { try await StoreContract.metadataRoundTrips(Self.make) }
     @Test func intAndBoolTags() async throws { try await StoreContract.intAndBoolTags(Self.make) }
+    @Test func nulCharactersAreSignificant() async throws { try await StoreContract.nulCharactersAreSignificant(Self.make) }
+    @Test func unicodeNormalizationIsSignificant() async throws {
+        try await StoreContract.unicodeNormalizationIsSignificant(Self.make)
+    }
     @Test func appendConditions() async throws { try await StoreContract.appendConditions(Self.make) }
     @Test func failedConditionalAppendsAreNotDelivered() async throws {
         try await StoreContract.failedConditionalAppendsAreNotDelivered(Self.make)
