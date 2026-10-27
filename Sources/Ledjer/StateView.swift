@@ -31,6 +31,9 @@ struct EventSelector: Sendable {
         }
     }
 
+    /// The tag bindings that restrict anything: those other than `.any`.
+    var requiredTagBindings: TagBindings { tagBindings.filter { $0.value != .any } }
+
     /// Whether this binding applies to `event`: the type matches and every bound tag has the
     /// bound value. As in Clojure's `has-bindings?`, a bound tag that the event doesn't have
     /// is not held against it: only a different value does.
@@ -51,13 +54,15 @@ struct EventSelector: Sendable {
 /// event of that type). Views are plain values, built without `try`, so this runs when a view is run or
 /// started, before anything is read.
 ///
-/// Bindings of one type with different tag bindings are fine, and may overlap: whether they do depends on
+/// Two bindings are the same when they match the same events, so a `.any` is as good as no binding for that
+/// tag (`matches` ignores it): `.on(E.self)` and `.on(E.self, where: [.payload("id"): .any])` are duplicates.
+/// Bindings of one type with different tag values are fine, and may overlap: whether they do depends on
 /// the events, which is checked per event, by `route`.
 func checkBindings(_ selectors: [EventSelector]) throws {
     try checkEventTypesAreUnique(selectors.map { (type: $0.eventType.type, swift: $0.swiftType) })
     for (index, selector) in selectors.enumerated() {
         let duplicated = selectors[..<index].contains {
-            $0.eventType.type == selector.eventType.type && $0.tagBindings == selector.tagBindings
+            $0.eventType.type == selector.eventType.type && $0.requiredTagBindings == selector.requiredTagBindings
         }
         if duplicated { throw LedjerError.duplicateBinding(eventType: selector.eventType.type) }
     }

@@ -168,6 +168,49 @@ struct MaybeTagged: Event {
         }
     }
 
+    @Test func anyBindingsCountAsNoBindingForTheDuplicateCheck() async throws {
+        let id = TagPath.payload("id"), num = TagPath.metadata("version")
+        // Each pair matches the same events.
+        let pairs: [(TagBindings, TagBindings)] = [
+            ([:], [id: .any]),
+            ([id: .any], [:]),
+            ([id: .any], [num: .any]),
+            ([id: .any, num: 1], [num: 1]),
+            ([num: 1], [id: .any, num: 1]),
+        ]
+        for (first, second) in pairs {
+            let view = StateView(initial: 0, bindings: [
+                .on(TestEventWithVersionTag.self, where: first) { acc, e in acc += e.num },
+                .on(TestEventWithVersionTag.self, where: second) { acc, e in acc -= e.num },
+            ])
+            do {
+                _ = try await view.run(on: InMemoryEventStore())
+                Issue.record("expected a duplicate binding for \(first) and \(second)")
+            } catch LedjerError.duplicateBinding(let type) {
+                #expect(type == TestEventWithVersionTag.eventType)
+            }
+        }
+    }
+
+    @Test func bindingsWithDifferentRequiredValuesAreNotDuplicates() async throws {
+        let id = TagPath.payload("id"), num = TagPath.metadata("version")
+        let pairs: [(TagBindings, TagBindings)] = [
+            ([id: "a"], [id: "b"]),
+            ([id: .any], [id: "b"]),
+            ([id: "a"], [:]),
+            ([id: .any, num: 1], [num: 2]),
+            ([id: "a"], [num: 1]),
+        ]
+        for (first, second) in pairs {
+            let view = StateView(initial: 0, bindings: [
+                .on(TestEventWithVersionTag.self, where: first) { acc, e in acc += e.num },
+                .on(TestEventWithVersionTag.self, where: second) { acc, e in acc -= e.num },
+            ])
+            // No events: nothing is routed, and the early check lets the view through.
+            #expect(try await view.run(on: InMemoryEventStore()) == 0, "\(first) and \(second)")
+        }
+    }
+
     @Test func reducersSeeTheStoredEvent() async throws {
         let view = StateView(initial: [Position](), bindings: [
             .on(TestEvent.self) { acc, _, stored in acc.append(stored.position) },
