@@ -37,5 +37,13 @@ let package = Package(
             name: "LedjerGRDBTests",
             dependencies: ["Ledjer", "LedjerGRDB", "LedjerStoreContract"]
         ),
+        // Uses the package as a client does: no `@testable`, so only the public API is visible.
+        .testTarget(
+            name: "LedjerPublicAPITests",
+            dependencies: [
+                "Ledjer", "LedjerGRDB", "LedjerStoreContract",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ]
+        ),
     ]
 )
