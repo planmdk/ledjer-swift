@@ -559,6 +559,64 @@ struct ScriptedSubscriptions: EventStore {
     }
 }
 
+/// An in-memory store that counts its subscriptions that have not been terminated yet.
+struct CountingSubscriptions: EventStore {
+    let base = InMemoryEventStore()
+    let active = Counter()
+
+    func source(_ query: Query, startPosition: Position?) async throws -> [StoredEvent] {
+        try await base.source(query, startPosition: startPosition)
+    }
+
+    func append(_ events: [NewEvent], condition: AppendCondition?) async throws -> Position? {
+        try await base.append(events, condition: condition)
+    }
+
+    func subscribe(_ query: Query, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
+        let inner = try await base.subscribe(query, startPosition: startPosition)
+        let (stream, continuation) = AsyncThrowingStream<StoredEvent, any Error>.makeStream()
+        let forwarder = Task {
+            do {
+                for try await event in inner { continuation.yield(event) }
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
+        }
+        active.increment()
+        let active = active
+        continuation.onTermination = { _ in
+            forwarder.cancel()
+            active.decrement()
+        }
+        return stream
+    }
+}
+
+@Suite struct PersistedViewSubscriptionTests {
+    /// Nothing is appended after the failure or the close, so only cancelling the pump can end the
+    /// subscription: a pump that waits for an event it never gets would not notice a closed inbox.
+    @Test func aFailedViewEndsItsSubscriptionWithoutBeingClosed() async throws {
+        struct Boom: Error {}
+        let store = CountingSubscriptions()
+        let failing = PersistedStateView<Add>(bindings: [.on(Counted.self) { _ in throw Boom() }])
+        let view = try await failing.start(on: store, accumulator: TotalsAccumulator(), options: fastOptions())
+        #expect(store.active.value == 1)
+        try await store.append([Counted(id: "a", num: 1)])
+        try await eventually { view.failure != nil }
+        try await eventually { store.active.value == 0 }
+        await view.close()
+    }
+
+    @Test func closingEndsTheSubscription() async throws {
+        let store = CountingSubscriptions()
+        let view = try await totalsView.start(on: store, accumulator: TotalsAccumulator(), options: fastOptions())
+        #expect(store.active.value == 1)
+        await view.close()
+        try await eventually { store.active.value == 0 }
+    }
+}
+
 @Suite struct PersistedViewFailurePathTests {
     /// The accumulator is the view's once passed to `start`: a view that can't start closes it.
     @Test func aViewThatCannotStartClosesTheAccumulator() async throws {
