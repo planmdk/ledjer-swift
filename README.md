@@ -66,6 +66,10 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
               thenThrows: { _ in true })
 ```
 
+`gwt`/`gt` compare the events an automation or state change appended with the expected ones by their
+JSON. Keep `Set`s and dictionaries with non-`String` keys out of those events (use sorted arrays),
+or equal events can compare unequal.
+
 ## How it differs from the Clojure library
 
 - **Typed, not dynamic.** Events are `Codable` structs and their type is their schema, so there is no
@@ -148,6 +152,12 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
   XCTest and Swift Testing alike. With an empty `then` they assert that nothing was appended (in
   Clojure such a scenario passes trivially). `gt(view:)` doesn't report failures to `onError` by
   default, as in Clojure, since it throws them.
+- **`gwt`/`gt` compare events as JSON bytes** (type and payload, keys sorted), where Clojure compares
+  values with `=`. Equal events encode equally, except for collections whose encoding follows their
+  iteration order: a `Set`, or a dictionary with non-`String` keys (encoded as an array), built
+  differently can encode in another order, and the scenario then fails although the events are equal.
+  The JSON doesn't say whether an array was a set, so comparing arrays as multisets would weaken the
+  check for ordered ones. Use ordered collections (a sorted array) in events that scenarios compare.
 - The types are named `StateView`, `EventTag`, … to stay clear of SwiftUI's `View` and Swift Testing's `Tag`.
 
 ## The GRDB store
