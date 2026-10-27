@@ -77,8 +77,9 @@ or equal events can compare unequal.
   malli. Tags are declared with key paths (`EventTag("id", \.id)`). Queries are validated when
   constructed (`try EventQuery.of(...)`), so stores never see an invalid one.
 - **Tag values are typed**: `String`, `Int`, `Bool`, `UUID`, compared by type and value (so are the
-  fixed-width integers that always fit an `Int`: `Int8`/`16`/`32`/`64` and `UInt8`/`16`/`32`, which become
-  the same `.int` as an `Int` of that value). `UInt`, `UInt64`, `Double`, `Date` and the like aren't tag
+  fixed-width integers that fit an `Int`: `Int8`/`16`/`32` and `UInt8`/`16`, and `Int64` and `UInt32` where
+  `Int` is 64 bits wide (not on arm64_32, for one), which become the same `.int` as an `Int` of that
+  value; `Int` itself is as wide as the platform). `UInt`, `UInt64`, `Double`, `Date` and the like aren't tag
   values: convert them yourself, deliberately. The `"*"` wildcard string is `.any`.
 - **Strings match by their UTF-8 bytes**, as in Clojure and the GRDB store, not by Unicode canonical
   equivalence as Swift's `String ==` does: tag values, tag names and event types written as the precomposed

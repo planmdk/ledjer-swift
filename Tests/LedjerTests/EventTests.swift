@@ -39,6 +39,16 @@ struct TestEvent2: Event {
         }
     }
 
+    @Test func fixedWidthIntegersFittingAnIntAreTagValues() {
+        #expect(Int8(-8).scalar == .int(-8))
+        #expect(Int16(16).scalar == .int(16))
+        #expect(Int32.min.scalar == .int(Int(Int32.min)))
+        #expect(UInt8.max.scalar == .int(255))
+        #expect(UInt16.max.scalar == .int(65535))
+    }
+
+    // `Int64` and `UInt32` are tag values only where `Int` is 64 bits wide.
+    #if _pointerBitWidth(_64)
     struct Sized: Event {
         static let eventType: EventType = "event-test/sized"
         static var tags: [EventTag<Self>] { [EventTag("small", \.small), EventTag("big", \.big), EventTag("count", \.count)] }
@@ -47,13 +57,8 @@ struct TestEvent2: Event {
         var count: UInt32?
     }
 
-    @Test func fixedWidthIntegersFittingAnIntAreTagValues() throws {
-        #expect(Int8(-8).scalar == .int(-8))
-        #expect(Int16(16).scalar == .int(16))
-        #expect(Int32.min.scalar == .int(Int(Int32.min)))
+    @Test func wideIntegersAreTagValuesOnA64BitInt() throws {
         #expect(Int64.max.scalar == .int(Int.max))
-        #expect(UInt8.max.scalar == .int(255))
-        #expect(UInt16.max.scalar == .int(65535))
         #expect(UInt32.max.scalar == .int(4_294_967_295))
 
         let event = try NewEvent(Sized(small: -3, big: 1 << 40, count: UInt32.max))
@@ -66,6 +71,7 @@ struct TestEvent2: Event {
         let query = try EventQuery.of(Sized.self, where: [.payload("big"): .bound(Int64(1) << 40), .payload("small"): .bound(Int(-3))])
         #expect(query.matches(type: Sized.eventType, tags: event.tags))
     }
+    #endif
 
     @Test func decodeChecksTheType() throws {
         let stored = StoredEvent(position: 1, type: "test/event-2", metadata: [:], payload: Data(#"{"id":"a","num":1}"#.utf8))
