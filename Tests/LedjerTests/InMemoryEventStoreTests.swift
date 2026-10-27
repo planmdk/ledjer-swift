@@ -37,7 +37,11 @@ private struct RacyStore: EventStore {
     @Test func sourceWithUUIDTags() async throws { try await StoreContract.sourceWithUUIDTags(Self.make) }
     @Test func sourceSelectsByTags() async throws { try await StoreContract.sourceSelectsByTagsOfTheEventsType(Self.make) }
     @Test func metadataRoundTrips() async throws { try await StoreContract.metadataRoundTrips(Self.make) }
+    @Test func intAndBoolTags() async throws { try await StoreContract.intAndBoolTags(Self.make) }
     @Test func appendConditions() async throws { try await StoreContract.appendConditions(Self.make) }
+    @Test func failedConditionalAppendsAreNotDelivered() async throws {
+        try await StoreContract.failedConditionalAppendsAreNotDelivered(Self.make)
+    }
     @Test func concurrentConditionalAppendsAreAtomic() async throws {
         try await StoreContract.concurrentConditionalAppendsAreAtomic(Self.make)
     }

@@ -26,7 +26,9 @@ public enum StoreContract {
         try await sourceWithUUIDTags(makeStore)
         try await sourceSelectsByTagsOfTheEventsType(makeStore)
         try await metadataRoundTrips(makeStore)
+        try await intAndBoolTags(makeStore)
         try await appendConditions(makeStore)
+        try await failedConditionalAppendsAreNotDelivered(makeStore)
         try await concurrentConditionalAppendsAreAtomic(makeStore)
         try await lastPositions(makeStore)
         try await subscribeFromNow(makeStore)
@@ -119,6 +121,108 @@ public enum StoreContract {
 
         let invalid = Result { try QueryItem([OrderNoted.self], where: [.payload("orderId"): "x"]) }
         try check({ if case .failure = invalid { true } else { false } }(), "binding for a tag no type has is invalid")
+    }
+
+    /// `Int` and `Bool` tag values match by type and value, in queries, `lastPosition` and conditions.
+    public static func intAndBoolTags(_ makeStore: StoreFactory) async throws {
+        let store = try await makeStore()
+        try await store.append([
+            Flagged(n: 1, active: true),  // 1
+            Flagged(n: 1, active: false),  // 2
+            Flagged(n: 2, active: true),  // 3
+            Flagged(n: 1, active: true),  // 4
+            Flagged(n: -1, active: false),  // 5
+            Flagged(n: Int.max, active: true),  // 6
+        ])
+        func positions(_ bindings: TagBindings) async throws -> [Position] {
+            try await store.source(Query.of(Flagged.self, where: bindings)).map(\.position)
+        }
+        let (n, active) = (TagPath.payload("n"), TagPath.payload("active"))
+        let one = try await positions([n: .bound(1)])
+        try check(one == [1, 2, 4], "Int tag: \(one)")
+        let negative = try await positions([n: .bound(-1)])
+        try check(negative == [5], "negative Int tag: \(negative)")
+        let largest = try await positions([n: .bound(Int.max)])
+        try check(largest == [6], "largest Int tag: \(largest)")
+        let isActive = try await positions([active: .bound(true)])
+        try check(isActive == [1, 3, 4, 6], "Bool tag, true: \(isActive)")
+        let inactive = try await positions([active: .bound(false)])
+        try check(inactive == [2, 5], "Bool tag, false: \(inactive)")
+        let both = try await positions([n: .bound(1), active: .bound(true)])
+        try check(both == [1, 4], "Int and Bool tags together: \(both)")
+        let anyN = try await positions([n: .any, active: .bound(false)])
+        try check(anyN == [2, 5], "wildcard and Bool tag: \(anyN)")
+
+        // Values match on type: neither "1" nor true is the Int 1, and neither "true" nor 1 is the Bool true.
+        let stringOne = try await positions([n: .bound("1")])
+        try check(stringOne.isEmpty, "the string \"1\" doesn't match the Int 1: \(stringOne)")
+        let boolForInt = try await positions([n: .bound(true)])
+        try check(boolForInt.isEmpty, "true doesn't match the Int 1: \(boolForInt)")
+        let intForBool = try await positions([active: .bound(1)])
+        try check(intForBool.isEmpty, "the Int 1 doesn't match the Bool true: \(intForBool)")
+        let stringForBool = try await positions([active: .bound("true")])
+        try check(stringForBool.isEmpty, "the string \"true\" doesn't match the Bool true: \(stringForBool)")
+
+        let lastOne = try await store.lastPosition(
+            matching: Query.of(Flagged.self, where: [n: .bound(1)]), through: 3)
+        try check(lastOne == 2, "lastPosition by an Int tag: \(String(describing: lastOne))")
+        let lastInactive = try await store.lastPosition(
+            matching: Query.of(Flagged.self, where: [active: .bound(false)]), through: 6)
+        try check(lastInactive == 5, "lastPosition by a Bool tag: \(String(describing: lastInactive))")
+
+        var failed = false
+        do {
+            try await store.append(
+                [Flagged(n: 9, active: false)],
+                condition: AppendCondition(query: try Query.of(Flagged.self, where: [n: .bound(2), active: .bound(true)]))
+            )
+        } catch LedjerError.appendConditionFailed {
+            failed = true
+        }
+        try check(failed, "a condition on Int and Bool tags fails when an event matches")
+        let passed = try await store.append(
+            [Flagged(n: 9, active: false)],
+            condition: AppendCondition(query: try Query.of(Flagged.self, where: [n: .bound(2), active: .bound(false)]))
+        )
+        try check(passed == 7, "a condition on Int and Bool tags passes when none matches: \(String(describing: passed))")
+    }
+
+    /// A conditional append that fails is never seen by subscribers: they get the events of the
+    /// appends that succeed, in order, without gaps or duplicates.
+    public static func failedConditionalAppendsAreNotDelivered(_ makeStore: StoreFactory) async throws {
+        let store = try await makeStore()
+        let order = UUID()
+        let placed = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(order)])
+        try await store.append([OrderPlaced(orderId: order)])  // 1
+        let live = Collector(try await store.subscribe(Query.of(OrderPlaced.self)))
+        let replaying = Collector(try await store.subscribe(Query.of(OrderPlaced.self), startPosition: 1))
+
+        var failures = 0
+        for _ in 0..<3 {
+            do {
+                try await store.append(
+                    [OrderPlaced(orderId: UUID()), OrderPlaced(orderId: UUID())],
+                    condition: AppendCondition(query: placed))
+            } catch LedjerError.appendConditionFailed {
+                failures += 1
+            }
+        }
+        try check(failures == 3, "the conditional appends fail: \(failures) of 3")
+
+        let accepted = (0..<2).map { _ in UUID() }
+        let last = try await store.append(
+            accepted.map { OrderPlaced(orderId: $0) },
+            condition: AppendCondition(query: placed, after: 1))
+        try check(last == 3, "the failed appends took no positions: \(String(describing: last))")
+
+        let expectedPositions = [2, 3]
+        let seen = try await live.settled()
+        try check(seen.map(\.position) == expectedPositions, "a live subscriber sees only the appended events: \(seen.map(\.position))")
+        try check(try orderIds(seen) == accepted, "in order")
+        let replayed = try await replaying.settled()
+        try check(replayed.map(\.position) == [1] + expectedPositions, "a replaying subscriber too: \(replayed.map(\.position))")
+        live.cancel()
+        replaying.cancel()
     }
 
     public static func metadataRoundTrips(_ makeStore: StoreFactory) async throws {
@@ -445,6 +549,15 @@ extension StoreContract {
         public var orderId: UUID
         public var note: String
         public init(orderId: UUID, note: String) { (self.orderId, self.note) = (orderId, note) }
+    }
+
+    /// Tags of the other scalar types: an `Int` and a `Bool`.
+    public struct Flagged: Event {
+        public static let eventType: EventType = "contract/flagged"
+        public static var tags: [EventTag<Self>] { [EventTag("n", \.n), EventTag("active", \.active)] }
+        public var n: Int
+        public var active: Bool
+        public init(n: Int, active: Bool) { (self.n, self.active) = (n, active) }
     }
 
     public struct VersionTagged: Event {
