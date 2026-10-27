@@ -105,6 +105,14 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
   holds within one handle only: an automation started right after the stop of another can overlap its last run.
   A `Trigger` is a description that each automation starts itself, so it can be shared;
   `Trigger.signal` takes a stream factory instead of a core.async channel.
+- **Duplicate event triggers** run once per entry. Clojure collects the plain event types of its triggers
+  into a set (`(into #{} (filter keyword? ...))`), so listing a type twice is the same as listing it
+  once; here `[.event(A.self), .event(A.self)]` runs the body twice for each `A`. (Tagged triggers are
+  one subscription each in both, so a tagged duplicate runs twice there too.)
+- **Duplicate bindings** of a view are an error. Clojure collects the bindings that match an event into a
+  map keyed by the binding's type (and tag bindings), so identical keys collapse and the last reducer
+  wins (`into {}`); here two `.on(A.self)` match the same event, and the view throws "exactly one
+  binding" when it meets one.
 - **Persisted views** keep Clojure's `close()` semantics: stop has priority over queued events, so
   closing commits only what was already applied (the rest is left for the next run, which resumes
   after the checkpoint), waits for the worker at most `closeTimeout` (5 s), and then closes the accumulator.
