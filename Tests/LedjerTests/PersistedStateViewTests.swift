@@ -1,6 +1,6 @@
 import Dispatch
 import Foundation
-import Ledjer
+@testable import Ledjer
 import LedjerStoreContract
 import Testing
 
@@ -593,19 +593,19 @@ struct CountingSubscriptions: EventStore {
     }
 }
 
-/// Fails its first commits, noting when each attempt was made.
-actor StampingAccumulator: PersistedAccumulator {
+/// Fails its first commits, counting the attempts.
+actor FlakyAccumulator: PersistedAccumulator {
     typealias Operation = Add
     private var failuresLeft: Int
     private var sequence: Position?
-    private(set) var attempts: [ContinuousClock.Instant] = []
+    private(set) var attempts = 0
 
     init(failingCommits: Int) { failuresLeft = failingCommits }
 
     var sequenceNumber: Position? { sequence }
 
     func commit(_ operations: [Add], through position: Position) throws {
-        attempts.append(.now)
+        attempts += 1
         if failuresLeft > 0 {
             failuresLeft -= 1
             throw CommitFailed()
@@ -614,23 +614,29 @@ actor StampingAccumulator: PersistedAccumulator {
     }
 }
 
+/// A stand-in for `Task.sleep` that returns at once and notes how long it was asked to sleep.
+final class SleepRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _durations: [Duration] = []
+    var durations: [Duration] { lock.withLock { _durations } }
+    func sleep(_ duration: Duration) { lock.withLock { _durations.append(duration) } }
+}
+
 @Suite struct PersistedViewBackoffTests {
-    /// A sleep never ends early, so the lower bounds are safe however loaded the machine is.
+    /// The first retry waits `commitBackoff`, and each following one twice as long as the one before.
     @Test func theBackoffDoublesWithEachRetry() async throws {
         let store = InMemoryEventStore()
-        let acc = StampingAccumulator(failingCommits: 3)
+        let acc = FlakyAccumulator(failingCommits: 3)
+        let sleeps = SleepRecorder()
         var options = fastOptions()
         options.commitRetries = 3
         options.commitBackoff = .milliseconds(40)
+        options.backoffSleep = { sleeps.sleep($0) }
         let view = try await totalsView.start(on: store, accumulator: acc, options: options)
         let position = try await store.append([Counted(id: "a", num: 1)])
         try await view.awaitPosition(position)
-        let attempts = await acc.attempts
-        #expect(attempts.count == 4)
-        let gaps = zip(attempts, attempts.dropFirst()).map { $1 - $0 }
-        for (gap, minimum) in zip(gaps, [Duration.milliseconds(40), .milliseconds(80), .milliseconds(160)]) {
-            #expect(gap >= minimum, "gaps between the attempts: \(gaps)")
-        }
+        #expect(await acc.attempts == 4)
+        #expect(sleeps.durations == [.milliseconds(40), .milliseconds(80), .milliseconds(160)])
         await view.close()
     }
 }

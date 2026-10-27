@@ -110,6 +110,9 @@ public struct PersistedViewOptions: Sendable {
     /// By default it is logged (`ErrorReporter.default`); `nil` silences it.
     public var onError: (@Sendable (any Error) -> Void)? = ErrorReporter.default
 
+    /// How the view waits between commit retries. A seam for tests, which can then see the delays.
+    var backoffSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+
     public init() {}
 }
 
@@ -503,7 +506,7 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
                 if error is PersistedAccumulatorConflict || attempt > options.commitRetries {
                     throw PersistedViewError.commit(position: position, attempts: attempt, underlying: error)
                 }
-                try await Task.sleep(for: backoff)
+                try await options.backoffSleep(backoff)
                 backoff = backoff * 2
                 attempt += 1
             }
