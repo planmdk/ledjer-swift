@@ -111,6 +111,7 @@ public enum StoreContract {
         try await sourceSelectsByTagsOfTheEventsType(makeStore)
         try await metadataRoundTrips(makeStore)
         try await appendConditions(makeStore)
+        try await concurrentConditionalAppendsAreAtomic(makeStore)
         try await lastPositions(makeStore)
         try await subscribeFromNow(makeStore)
         try await subscribeWithStartPosition(makeStore)
@@ -280,6 +281,33 @@ public enum StoreContract {
             failed = true
         }
         try check(failed, "empty append evaluates its condition")
+    }
+
+    /// The condition is evaluated atomically with the append: of several concurrent appends that each
+    /// require that no matching event exists, exactly one succeeds.
+    public static func concurrentConditionalAppendsAreAtomic(_ makeStore: StoreFactory) async throws {
+        let store = try await makeStore()
+        let writers = 8
+        for round in 0..<50 {
+            let order = UUID()
+            let placed = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(order)])
+            let successes = try await withThrowingTaskGroup(of: Bool.self) { group in
+                for _ in 0..<writers {
+                    group.addTask {
+                        do {
+                            try await store.append([OrderPlaced(orderId: order)], condition: AppendCondition(query: placed))
+                            return true
+                        } catch LedjerError.appendConditionFailed {
+                            return false
+                        }
+                    }
+                }
+                return try await group.reduce(0) { $0 + ($1 ? 1 : 0) }
+            }
+            try check(successes == 1, "round \(round): \(successes) of \(writers) concurrent conditional appends succeeded, expected 1")
+            let stored = try await store.source(placed).count
+            try check(stored == 1, "round \(round): the log holds \(stored) matching events, expected 1")
+        }
     }
 
     public static func lastPositions(_ makeStore: StoreFactory) async throws {
