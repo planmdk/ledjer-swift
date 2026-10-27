@@ -20,10 +20,11 @@ public final class GRDBEventStore: EventStore {
     /// How many events a subscription fetches at a time.
     private static let batchSize = 500
 
-    /// The most selectors (event types, per tag bindings that apply to them) a query can have.
+    /// The maximum number of selectors per query (`EventQuery.selectors`: one per event type of each query item,
+    /// with the tag bindings that apply to it). Queries with more are rejected with `LedjerError.invalidQuery`.
     /// Each selector is one branch of a `UNION`, and SQLite's default limit for the terms of a
     /// compound `SELECT` is 500.
-    static let maxSelectors = 500
+    public static let maxSelectors = 500
 
     /// Throws `LedjerError.invalidQuery` for a query with more selectors than SQLite can combine,
     /// instead of letting SQLite fail with "too many terms in compound SELECT".
