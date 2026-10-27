@@ -23,6 +23,43 @@ struct TestEvent2: Event {
         #expect(try NewEvent(VersionTagged(id: "a")).metadata["version"] == .int(2))
     }
 
+    @Test func scalarEncodingRoundTrips() {
+        let id = UUID()
+        var scalars: [Scalar] = [
+            .string(""), .string("a:b"), .string(":"), .string("::x"), .string("string:int:1"), .string("café"), .string("cafe\u{301}"),
+            .string("\u{301}"), .string("日本語 🎉"), .string("a\0b"), .string("\0"), .string("\r\n"),
+            .int(0), .int(-3), .int(7), .int(Int.max), .int(Int.min), .bool(true), .bool(false), .uuid(id), .uuid(UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))),
+        ]
+        #if _pointerBitWidth(_64)
+        scalars.append(UInt32.max.scalar)
+        #endif
+        for scalar in scalars {
+            let decoded = Scalar(encoded: scalar.encoded)
+            #expect(decoded == scalar, "\(scalar)")
+            #expect(decoded?.encoded.utf8.elementsEqual(scalar.encoded.utf8) == true, "\(scalar)")
+        }
+    }
+
+    @Test func nonCanonicalScalarEncodingsAreRejected() throws {
+        let id = UUID(uuidString: "6F9619FF-8B86-D011-B42D-00C04FC964FF")!
+        #expect(Scalar(encoded: "uuid:" + id.uuidString) == .uuid(id))
+        #expect(Scalar(encoded: "uuid:" + id.uuidString.lowercased()) == nil)
+        let rejected = [
+            "", "int", "string", "bool:", "x:1", "String:a", " string:a", "string :a",
+            "int:+5", "int:05", "int:00", "int:-0", "int:+0", "int:-05", "int:", "int:-", "int: 5", "int:5 ", "int:1.0", "int:1e3", "int:٣",
+            "int:9223372036854775808", "int:-9223372036854775809",
+            "bool:True", "bool:TRUE", "bool:1", "bool:yes", "bool: true",
+            "uuid:", "uuid:not-a-uuid", "uuid:" + id.uuidString + " ",
+            "uuid:" + id.uuidString.replacingOccurrences(of: "-", with: ""),
+        ]
+        for input in rejected {
+            #expect(Scalar(encoded: input) == nil, "\(input)")
+        }
+        // Also by the Codable conformance, which decoders of stored metadata go through.
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode([Scalar].self, from: Data(#"["int:+5"]"#.utf8)) }
+        #expect(try JSONDecoder().decode([Scalar].self, from: Data(#"["int:5"]"#.utf8)) == [.int(5)])
+    }
+
     @Test func optionalTagsAreLeftOutWhenNil() throws {
         let without = try NewEvent(OrderPlaced(orderId: UUID()))
         #expect(without.tags.keys.contains(.payload("customer")) == false)

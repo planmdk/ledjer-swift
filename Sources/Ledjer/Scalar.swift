@@ -57,24 +57,32 @@ extension Scalar {
         }
     }
 
-    /// The inverse of `encoded`. `nil` if `encoded` isn't one.
+    /// The inverse of `encoded`: only what `encoded` produces is accepted, so `Scalar(encoded: x)?.encoded == x`
+    /// by bytes. `nil` for anything else, including forms that parse but aren't canonical: `int:+5`,
+    /// `int:05`, `int:-0`, a lowercase `uuid:`.
     public init?(encoded: String) {
-        guard let colon = encoded.firstIndex(of: ":") else { return nil }
-        let prefix = encoded[..<colon]
-        let rest = String(encoded[encoded.index(after: colon)...])
+        // Split on the first ':' byte. A search by `Character` wouldn't find one that is followed by a
+        // combining mark, as in the encoding of the string "\u{301}".
+        let bytes = encoded.utf8
+        guard let colon = bytes.firstIndex(of: UInt8(ascii: ":")) else { return nil }
+        let prefix = String(decoding: bytes[..<colon], as: UTF8.self)
+        let rest = String(decoding: bytes[bytes.index(after: colon)...], as: UTF8.self)
+        let parsed: Scalar
         switch prefix {
-        case "string": self = .string(rest)
+        case "string": parsed = .string(rest)
         case "int":
             guard let v = Int(rest) else { return nil }
-            self = .int(v)
+            parsed = .int(v)
         case "bool":
             guard let v = Bool(rest) else { return nil }
-            self = .bool(v)
+            parsed = .bool(v)
         case "uuid":
             guard let v = UUID(uuidString: rest) else { return nil }
-            self = .uuid(v)
+            parsed = .uuid(v)
         default: return nil
         }
+        guard parsed.encoded.isByteEqual(to: encoded) else { return nil }
+        self = parsed
     }
 }
 
