@@ -12,6 +12,16 @@ public struct EventType: Hashable, Sendable, ExpressibleByStringLiteral, CustomS
 
     public static func == (lhs: EventType, rhs: EventType) -> Bool { lhs.rawValue.isByteEqual(to: rhs.rawValue) }
     public func hash(into hasher: inout Hasher) { rawValue.hashBytes(into: &hasher) }
+
+    /// Encoded as the bare string, e.g. `"orders/order-placed"`.
+    public init(from decoder: any Decoder) throws {
+        self.rawValue = try decoder.singleValueContainer().decode(String.self)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 /// Names a value that events can be selected by: a key in an event's

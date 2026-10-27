@@ -73,6 +73,20 @@ struct TestEvent2: Event {
     }
     #endif
 
+    @Test func eventTypeIsCodedAsABareString() throws {
+        let type: EventType = "orders/order-placed"
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .withoutEscapingSlashes
+        let json = try encoder.encode([type])
+        #expect(String(decoding: json, as: UTF8.self) == #"["orders/order-placed"]"#)
+        #expect(try JSONDecoder().decode([EventType].self, from: json) == [type])
+        #expect(try JSONDecoder().decode([EventType].self, from: Data(#"["a","b"]"#.utf8)) == ["a", "b"])
+        // Keeps the exact spelling.
+        let nfd = EventType("cafe\u{301}")
+        #expect(try JSONDecoder().decode([EventType].self, from: JSONEncoder().encode([nfd])) == [nfd])
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode([EventType].self, from: Data(#"[{"rawValue":"a"}]"#.utf8)) }
+    }
+
     @Test func decodeChecksTheType() throws {
         let stored = StoredEvent(position: 1, type: "test/event-2", metadata: [:], payload: Data(#"{"id":"a","num":1}"#.utf8))
         #expect(try stored.decode(TestEvent2.self).num == 1)
