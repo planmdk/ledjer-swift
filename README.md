@@ -159,7 +159,10 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
 - An append and its condition check run in one write transaction.
 - Queries are driven by the tag index: each selector is a range scan over `(name, value, position)` (or
   `(type, position)` without tags), so the cost follows the number of matching events, not the length of
-  the log. The tests check the query plans of the SQL the store really generates.
+  the log. With several tags in a selector, the scan is driven by the first one in alphabetical order
+  of its path (e.g. `payload.customer` before `payload.orderId`) and the others are looked up per
+  candidate, so the cost follows the number of events with *that* tag value, which can exceed the number of
+  events matching all of them. The tests check the query plans of the SQL the store really generates.
 - `GRDBAccumulator` commits a batch of read-model writes and its checkpoint in one transaction.
   To rebuild a read model, empty its tables and call `GRDBAccumulator.clearCheckpoint(named:in:)` in a migration.
 - Subscriptions use `ValueObservation`, which sees writes made through the same `DatabaseWriter`
