@@ -210,7 +210,14 @@ or equal events can compare unequal.
   that apply to it; identical ones count once). Each selector is one branch of a `UNION`, and SQLite's
   default limit for the terms of a compound `SELECT` is 500. Reads, subscriptions and the condition of
   an append throw `LedjerError.invalidQuery` beyond that, before running any SQL, so an append with
-  such a condition writes nothing. Split a larger query, or use a coarser one and filter.
+  such a condition writes nothing. Split a larger query, or use a coarser one and filter
+  (`GRDBEventStore.maxSelectors`).
+- Every tag a selector binds adds bind parameters: a branch takes 2k+2 of them for k bound tags (the tag
+  name and value of each, the lower bound of the positions, the event type), plus one for an upper bound and
+  one for a limit, which subscriptions and `lastPosition` use (2k+4 in all). So a query of 500 selectors
+  with 31 or more bound tags each (32 for a plain `source`) can exceed SQLite's default limit of 32766 bound
+  parameters, and fail with a raw `DatabaseError` ("too many SQL variables") instead of
+  `LedjerError.invalidQuery`. Nothing realistic gets near this: 30 tags in each of 500 selectors.
 - `GRDBAccumulator` commits a batch of read-model writes and its checkpoint in one transaction.
   To rebuild a read model, empty its tables and call `GRDBAccumulator.clearCheckpoint(named:in:)` in a migration.
 - Subscriptions use `ValueObservation`, which sees writes made through the same `DatabaseWriter`
@@ -303,8 +310,9 @@ never overlap.
         }
     }
 
-    /// A view or automation that failed anyway: restart them when the app is active.
-    private func failed(_ error: any Error) { /* log it, then `stop()` and `start()` */ }
+    /// A view or automation that failed anyway: log it and `stop()`, and `start()` again on the next `.active`.
+    /// (Restarting at once would be a tight loop if opening keeps failing: add a delay and a retry limit if you do.)
+    private func failed(_ error: any Error) { /* log it, then `stop()` */ }
 }
 
 // In the App. The closure runs on the main actor, so the calls happen in the order of the phases.

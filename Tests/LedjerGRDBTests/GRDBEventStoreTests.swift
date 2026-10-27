@@ -86,6 +86,19 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
         #expect(try await events.next()?.position == first)
     }
 
+    /// The README's arithmetic for the bound-parameter limit: 2k+2 per branch for k bound tags, 2k+4 with an
+    /// upper bound and a limit.
+    @Test func aBranchBindsTwoParametersPerBoundTagPlusTwoToFour() throws {
+        for (tags, k) in [([:], 0), ([.payload("orderId"): .bound(UUID())], 1),
+                          ([.payload("orderId"): .bound(UUID()), .payload("customer"): "ann"], 2)] as [(TagBindings, Int)] {
+            let query = try EventQuery.of(OrderPlaced.self, where: tags)
+            let plain = try #require(GRDBEventStore.positionsSQL(for: query, after: 0, upTo: nil, limit: nil))
+            #expect(plain.sql.filter { $0 == "?" }.count == 2 * k + 2, "k = \(k)")
+            let bounded = try #require(GRDBEventStore.positionsSQL(for: query, after: 0, upTo: 10, limit: 5))
+            #expect(bounded.sql.filter { $0 == "?" }.count == 2 * k + 4, "k = \(k)")
+        }
+    }
+
     @Test func moreSelectorsThanSQLiteCanCombineAreRefusedClearly() async throws {
         let queue = try DatabaseQueue()
         let store = try GRDBEventStore(queue)
