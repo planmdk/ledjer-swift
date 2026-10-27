@@ -108,7 +108,8 @@ or equal events can compare unequal.
   after `stop()` returns, so bodies should honour cancellation and be idempotent. "Runs never overlap"
   holds within one handle only: an automation started right after the stop of another can overlap its last run.
   A `Trigger` is a description that each automation starts itself, so it can be shared;
-  `Trigger.signal` takes a stream factory instead of a core.async channel.
+  `Trigger.signal` takes a stream factory instead of a core.async channel, and `Trigger.periodic(every:)`
+  is a trigger of its own where Clojure has `automation/periodic`, a helper that makes such a channel.
 - **Duplicate event triggers** run once per entry. Clojure collects the plain event types of its triggers
   into a set (`(into #{} (filter keyword? ...))`), so listing a type twice is the same as listing it
   once; here `[.event(A.self), .event(A.self)]` runs the body twice for each `A`. (Tagged triggers are
@@ -139,6 +140,11 @@ or equal events can compare unequal.
 - **The GRDB store limits a query to 500 selectors** (see below); the in-memory store, like the Clojure
   one, has no such limit, and the store contract doesn't check it. A query that is fine in memory can
   throw `LedjerError.invalidQuery` against GRDB.
+- **`awaitPosition` on a failed view throws its failure at once**, also for a `nil` position, when nothing
+  the view applies is pending, or when the position is already committed. Clojure's `await-position`
+  returns `nil` in those cases (it first looks for an uncommitted event up to the position) and throws
+  the failure only while it waits for one. The same goes for a closed view (`PersistedViewError.closed`),
+  which Clojure has no counterpart of.
 - **A persisted view that fails to start closes its accumulator** before `start` throws. Clojure's
   `persisted-view*` doesn't: the caller is left with an accumulator (a connection, say) to close, and
   if it forgets, the accumulator leaks and its checkpoint stays held. In Swift the accumulator is the
