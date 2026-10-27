@@ -64,7 +64,7 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
 
     /// A query of `count` selectors: one item of the same type per order, so each is a branch of the union.
     private func query(selectors count: Int) -> EventQuery {
-        EventQuery((0..<count).map { _ in try! EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())]) })
+        try! EventQuery((0..<count).map { _ in try EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())]) })
     }
 
     @Test func aQueryOfTheMaximumNumberOfSelectorsWorks() async throws {
@@ -74,7 +74,7 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
         let items = (0..<(GRDBEventStore.maxSelectors - 1)).map { _ in
             try! EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())])
         } + [try EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(order)])]
-        let query = EventQuery(items)
+        let query = try EventQuery(items)
         #expect(query.selectors.count == 500)
 
         #expect(try await store.source(query).map(\.position) == [first])
@@ -172,7 +172,7 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
     }
 
     @Test func aSecondSelectorDoesNotDefeatTheTagIndex() throws {
-        let query = EventQuery([
+        let query = try EventQuery([
             try EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())]),
             try EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())]),
         ])

@@ -95,6 +95,30 @@ struct TestEvent2: Event {
         #expect(try EventQuery.of(SharedNameA.self, SharedNameA.self).selectors.count == 1)
     }
 
+    @Test func twoSwiftTypesWithOneEventTypeAreInvalidAcrossItems() throws {
+        let a = try EventQueryItem([SharedNameA.self], where: [.payload("id"): "a"])
+        let b = try EventQueryItem([SharedNameB.self], where: [.payload("id"): "b"])
+        #expect(throws: LedjerError.self) { try EventQuery([a, b]) }
+        #expect(throws: LedjerError.self) { try EventQuery([try EventQueryItem([OrderPlaced.self]), a, b]) }
+        do {
+            _ = try EventQuery([b, a])
+            Issue.record("expected duplicateEventType")
+        } catch LedjerError.duplicateEventType(let type, let swiftTypes) {
+            #expect(type == SharedNameA.eventType)
+            #expect(swiftTypes.count == 2)
+        }
+    }
+
+    @Test func oneSwiftTypeInSeveralItemsIsFine() throws {
+        let query = try EventQuery([
+            try EventQueryItem([SharedNameA.self], where: [.payload("id"): "a"]),
+            try EventQueryItem([SharedNameA.self], where: [.payload("id"): "b"]),
+            try EventQueryItem([SharedNameA.self]),
+        ])
+        #expect(query.items.count == 3)
+        #expect(query.selectors.count == 3)
+    }
+
     @Test func unknownTagPathIsInvalid() {
         #expect(throws: LedjerError.self) { try EventQuery.of(OrderNoted.self, where: [.payload("orderId"): "x"]) }
         #expect(throws: LedjerError.self) { try EventQuery.of(OrderPlaced.self, where: [.metadata("version"): 1]) }
@@ -120,7 +144,7 @@ struct TestEvent2: Event {
         #expect(Scalar.string(nfc) == Scalar.string(String(nfc)))
 
         let name = TagPath.payload("name")
-        let query = EventQuery([
+        let query = try EventQuery([
             try EventQueryItem([StoreContract.StringTagged.self], where: [name: .bound(nfc)]),
             try EventQueryItem([StoreContract.StringTagged.self], where: [name: .bound(nfd)]),
         ])

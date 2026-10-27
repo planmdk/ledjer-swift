@@ -22,13 +22,28 @@ extension TagBinding: ExpressibleByStringLiteral, ExpressibleByIntegerLiteral, E
 public typealias TagBindings = [TagPath: TagBinding]
 
 /// An event type as queries see it: its name and the tags it declares.
+///
+/// Remembers the Swift type too (and is equal only to infos of the same Swift type), so that a query can
+/// tell one Swift type used in several items from different Swift types sharing an event type.
 public struct EventTypeInfo: Hashable, Sendable {
     public let type: EventType
     public let tags: Set<TagPath>
+    let swiftType: any Event.Type
 
     init(_ eventType: any Event.Type) {
         self.type = eventType.eventType
         self.tags = eventType.tagPaths
+        self.swiftType = eventType
+    }
+
+    public static func == (lhs: EventTypeInfo, rhs: EventTypeInfo) -> Bool {
+        lhs.type == rhs.type && lhs.tags == rhs.tags && ObjectIdentifier(lhs.swiftType) == ObjectIdentifier(rhs.swiftType)
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(type)
+        hasher.combine(tags)
+        hasher.combine(ObjectIdentifier(swiftType))
     }
 }
 
@@ -38,7 +53,8 @@ public struct EventTypeInfo: Hashable, Sendable {
 /// select each other's events and decode each other's payloads. The Clojure library has the same
 /// requirement ("event type already registered": it only notes the clash, and the last definition wins).
 /// There is no registry here, since Swift types are named where they are used, so this is checked where
-/// types come together: in a query, and in a view's bindings.
+/// types come together: in a query (across all of its items), and in a view's bindings. The same Swift type
+/// any number of times is fine.
 func checkEventTypesAreUnique(_ declared: [(type: EventType, swift: any Event.Type)]) throws {
     var first: [EventType: any Event.Type] = [:]
     for (type, swift) in declared {
@@ -97,13 +113,21 @@ public struct EventQuery: Hashable, Sendable {
     /// that apply to it. This is what stores execute.
     public let selectors: Set<Selector>
 
-    public init(_ items: [EventQueryItem]) {
+    /// Throws `LedjerError.duplicateEventType` if different Swift types in the items declare the same event
+    /// type. The same Swift type in several items is fine (e.g. one item per order).
+    public init(_ items: [EventQueryItem]) throws {
+        try checkEventTypesAreUnique(items.flatMap { $0.eventTypes.map { (type: $0.type, swift: $0.swiftType) } })
+        self.init(validated: items)
+    }
+
+    public init(_ item: EventQueryItem) { self.init(validated: [item]) }
+
+    /// For items whose event types are known not to clash.
+    init(validated items: [EventQueryItem]) {
         let items = Set(items)
         self.items = items
         self.selectors = Self.selectors(of: items)
     }
-
-    public init(_ item: EventQueryItem) { self.init([item]) }
 
     public static func == (lhs: EventQuery, rhs: EventQuery) -> Bool { lhs.items == rhs.items }
     public func hash(into hasher: inout Hasher) { hasher.combine(items) }

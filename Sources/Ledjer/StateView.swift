@@ -107,7 +107,7 @@ func query(for selectors: [EventSelector], narrowedBy runtime: TagBindings = [:]
         }
         items.append(EventQueryItem(unchecked: [selector.eventType], tagBindings: merged))
     }
-    return EventQuery(items)
+    return EventQuery(validated: items)
 }
 
 // MARK: - State views

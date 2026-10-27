@@ -105,7 +105,7 @@ public enum StoreContract {
         try check(wrongVersion.isEmpty, "metadata tag, other value: \(wrongVersion.map(\.position))")
 
         let union = try await store.source(
-            EventQuery([
+            try EventQuery([
                 try EventQueryItem([OrderPlaced.self], where: [.payload("customer"): "ann"]),
                 try EventQueryItem([OrderPlaced.self], where: [.payload("customer"): "bob"]),
                 try EventQueryItem([OrderNoted.self]),
@@ -114,7 +114,7 @@ public enum StoreContract {
         try check(union.map(\.position) == [1, 2, 4], "items are joined by OR: \(union.map(\.position))")
 
         let overlapping = try await store.source(
-            EventQuery([
+            try EventQuery([
                 try EventQueryItem([OrderPlaced.self]),
                 try EventQueryItem([OrderPlaced.self], where: [.payload("customer"): "ann"]),
             ])
@@ -231,7 +231,7 @@ public enum StoreContract {
         let other = try await positions("alice" + nul + "other")
         try check(other.isEmpty, "a different suffix after the NUL: \(other)")
         let both = try await store.source(
-            EventQuery([
+            try EventQuery([
                 try EventQueryItem([StringTagged.self], where: [name: .bound("alice")]),
                 try EventQueryItem([StringTagged.self], where: [name: .bound("alice" + nul + "evil")]),
             ])
@@ -300,7 +300,7 @@ public enum StoreContract {
         let (onlyNFC, onlyNFD) = (try await positions(nfc), try await positions(nfd))
         try check(onlyNFC == [1] && onlyNFD == [2], "both coexist: NFC \(onlyNFC), NFD \(onlyNFD)")
         let both = try await store.source(
-            EventQuery([
+            try EventQuery([
                 try EventQueryItem([StringTagged.self], where: [name: .bound(nfc)]),
                 try EventQueryItem([StringTagged.self], where: [name: .bound(nfd)]),
             ])
@@ -503,7 +503,7 @@ public enum StoreContract {
         try check(gotB == 3, "tagged, another: \(String(describing: gotB))")
         let none = try await last(try EventQuery.of(OrderPlaced.self, where: [.payload("orderId"): .bound(UUID())]), through: 4)
         try check(none == nil, "nothing matches: \(String(describing: none))")
-        let union = EventQuery([try EventQueryItem([OrderNoted.self]), try EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(b)])])
+        let union = try EventQuery([try EventQueryItem([OrderNoted.self]), try EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(b)])])
         let gotUnion = try await last(union, through: 4)
         try check(gotUnion == 3, "union: \(String(describing: gotUnion))")
         let unionEarly = try await last(union, through: 2)
@@ -541,7 +541,7 @@ public enum StoreContract {
         let id = UUID()
         let c4 = Collector(
             try await store.subscribe(
-                EventQuery([
+                try EventQuery([
                     try EventQueryItem([OrderPlaced.self]),
                     try EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(id)]),
                 ])

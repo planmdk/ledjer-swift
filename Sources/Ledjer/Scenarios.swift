@@ -17,8 +17,8 @@ private func describe(_ events: [StoredEvent]) -> String {
     "[" + events.map { "\($0.type) \(String(decoding: $0.payload, as: UTF8.self))" }.joined(separator: ", ") + "]"
 }
 
-private func eventTypes(of events: [any Event]) -> EventQuery {
-    EventQuery(EventQueryItem(unchecked: Set(events.map { EventTypeInfo(type(of: $0)) }), tagBindings: [:]))
+private func eventTypes(of events: [any Event]) throws -> EventQuery {
+    try EventQuery([EventQueryItem(unchecked: Set(events.map { EventTypeInfo(type(of: $0)) }), tagBindings: [:])])
 }
 
 private func sameTypeAndPayload(_ actual: [StoredEvent], _ expected: [NewEvent]) -> Bool {
@@ -42,7 +42,7 @@ public func gwt(
     let actual =
         expected.isEmpty
         ? await store.allEvents(startPosition: start)
-        : try await store.source(eventTypes(of: expected), startPosition: start)
+        : try await store.source(try eventTypes(of: expected), startPosition: start)
     let wanted = try expected.map { try NewEvent($0) }
     guard sameTypeAndPayload(actual, wanted) else {
         throw ScenarioFailure("Expected new events \(describe(wanted)), got \(describe(actual))")
@@ -107,7 +107,7 @@ public func gt(
     defer { running.stop() }
     let last = try await store.append(given)
     // Subscribing from after `given` sees a reaction appended before this subscribes.
-    let stream = try await store.subscribe(eventTypes(of: expected), startPosition: (last ?? 0) + 1)
+    let stream = try await store.subscribe(try eventTypes(of: expected), startPosition: (last ?? 0) + 1)
     let wanted = try expected.map { try NewEvent($0) }
     let count = wanted.count
     guard count > 0 else {
