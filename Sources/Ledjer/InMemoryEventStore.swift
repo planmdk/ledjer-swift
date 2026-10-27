@@ -9,7 +9,7 @@ public actor InMemoryEventStore: EventStore {
     }
 
     private struct Subscriber {
-        let query: Query
+        let query: EventQuery
         /// Events before this position aren't delivered.
         let minimumPosition: Position
         let continuation: AsyncThrowingStream<StoredEvent, any Error>.Continuation
@@ -25,14 +25,14 @@ public actor InMemoryEventStore: EventStore {
 
     public init() {}
 
-    public func source(_ query: Query, startPosition: Position?) async throws -> [StoredEvent] {
+    public func source(_ query: EventQuery, startPosition: Position?) async throws -> [StoredEvent] {
         let start = startPosition ?? 0
         return entries
             .filter { $0.event.position >= start && query.matches(type: $0.event.type, tags: $0.tags) }
             .map(\.event)
     }
 
-    public func lastPosition(matching query: Query, through position: Position) async throws -> Position? {
+    public func lastPosition(matching query: EventQuery, through position: Position) async throws -> Position? {
         entries.last { $0.event.position <= position && query.matches(type: $0.event.type, tags: $0.tags) }?.event.position
     }
 
@@ -43,7 +43,7 @@ public actor InMemoryEventStore: EventStore {
     }
 
     public func subscribe(
-        _ query: Query,
+        _ query: EventQuery,
         startPosition: Position?
     ) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
         let (stream, continuation) = AsyncThrowingStream<StoredEvent, any Error>.makeStream()

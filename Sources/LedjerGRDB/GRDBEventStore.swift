@@ -27,7 +27,7 @@ public final class GRDBEventStore: EventStore {
 
     /// Throws `LedjerError.invalidQuery` for a query with more selectors than SQLite can combine,
     /// instead of letting SQLite fail with "too many terms in compound SELECT".
-    static func checkSelectorCount(_ query: Query) throws {
+    static func checkSelectorCount(_ query: EventQuery) throws {
         guard query.selectors.count <= maxSelectors else {
             throw LedjerError.invalidQuery(
                 "the GRDB store supports at most \(maxSelectors) query selectors per query, "
@@ -62,7 +62,7 @@ public final class GRDBEventStore: EventStore {
 
     // MARK: EventStore
 
-    public func source(_ query: Query, startPosition: Position?) async throws -> [StoredEvent] {
+    public func source(_ query: EventQuery, startPosition: Position?) async throws -> [StoredEvent] {
         try Self.checkSelectorCount(query)
         let after = max((startPosition ?? 0) - 1, 0)
         return try await writer.read { db in
@@ -101,7 +101,7 @@ public final class GRDBEventStore: EventStore {
         }
     }
 
-    public func lastPosition(matching query: Query, through position: Position) async throws -> Position? {
+    public func lastPosition(matching query: EventQuery, through position: Position) async throws -> Position? {
         try Self.checkSelectorCount(query)
         return try await writer.read { db in
             guard let (sql, arguments) = Self.lastPositionSQL(for: query, through: position) else { return nil }
@@ -110,7 +110,7 @@ public final class GRDBEventStore: EventStore {
     }
 
     public func subscribe(
-        _ query: Query,
+        _ query: EventQuery,
         startPosition: Position?
     ) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
         try Self.checkSelectorCount(query)
@@ -133,7 +133,7 @@ public final class GRDBEventStore: EventStore {
     /// (also after a cancellation, which just makes the next call return `nil`), so no locking.
     private final class Subscription: @unchecked Sendable {
         let writer: any DatabaseWriter
-        let query: Query
+        let query: EventQuery
         let batchSize: Int
         /// Events up to here have been read from the database.
         var delivered: Position
@@ -143,7 +143,7 @@ public final class GRDBEventStore: EventStore {
         var bufferIndex = 0
         var heads: AsyncValueObservation<Position>.AsyncIterator?
 
-        init(writer: any DatabaseWriter, query: Query, batchSize: Int, delivered: Position) {
+        init(writer: any DatabaseWriter, query: EventQuery, batchSize: Int, delivered: Position) {
             self.writer = writer
             self.query = query
             self.batchSize = batchSize
@@ -200,7 +200,7 @@ public final class GRDBEventStore: EventStore {
     /// The events matching `query` at positions in `(after, upTo]`, in order.
     fileprivate static func fetch(
         _ db: Database,
-        _ query: Query,
+        _ query: EventQuery,
         after: Position,
         upTo: Position?,
         limit: Int?
@@ -218,7 +218,7 @@ public final class GRDBEventStore: EventStore {
 
     /// SQL selecting the events of `query` within `(after, upTo]`, in order, or `nil` if the query selects nothing.
     static func eventsSQL(
-        for query: Query,
+        for query: EventQuery,
         after: Position,
         upTo: Position?,
         limit: Int?
@@ -233,7 +233,7 @@ public final class GRDBEventStore: EventStore {
     }
 
     /// SQL for the position of the last event of `query` at or before `position`, or `nil` if the query selects nothing.
-    static func lastPositionSQL(for query: Query, through position: Position) -> (sql: String, arguments: StatementArguments)? {
+    static func lastPositionSQL(for query: EventQuery, through position: Position) -> (sql: String, arguments: StatementArguments)? {
         guard let (positions, arguments) = positionsSQL(for: query, after: 0, upTo: position, limit: 1, descending: true) else {
             return nil
         }
@@ -253,7 +253,7 @@ public final class GRDBEventStore: EventStore {
     ///
     /// Tag values carry their type, so a UUID never matches its string.
     static func positionsSQL(
-        for query: Query,
+        for query: EventQuery,
         after: Position,
         upTo: Position?,
         limit: Int?,

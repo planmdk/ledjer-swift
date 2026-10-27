@@ -6,7 +6,7 @@ import Foundation
 /// uses it starts its own listener, so a trigger can be shared freely.
 public struct Trigger: Sendable {
     enum Kind: Sendable {
-        case events(Query)
+        case events(EventQuery)
         case signal(@Sendable () -> AsyncStream<Void>)
         case periodic(Duration)
     }
@@ -14,12 +14,12 @@ public struct Trigger: Sendable {
 
     /// Fires for each new `E` event.
     public static func event<E: Event>(_ type: E.Type) -> Trigger {
-        Trigger(kind: .events(Query(QueryItem(unchecked: [EventTypeInfo(type)], tagBindings: [:]))))
+        Trigger(kind: .events(EventQuery(EventQueryItem(unchecked: [EventTypeInfo(type)], tagBindings: [:]))))
     }
 
     /// Fires for each new `E` event with the given tag values.
     public static func event<E: Event>(_ type: E.Type, where tagBindings: TagBindings) throws -> Trigger {
-        Trigger(kind: .events(try Query(QueryItem([type], where: tagBindings))))
+        Trigger(kind: .events(try EventQuery(EventQueryItem([type], where: tagBindings))))
     }
 
     /// Fires for each element of the stream `make` returns. `make` is called

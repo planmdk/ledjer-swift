@@ -286,7 +286,7 @@ private func reactImmediately(_ store: any EventStore) async throws -> Automatio
 
 @Suite struct GwtTests {
     private func placeOrder(_ store: any EventStore, id: String) async throws {
-        let existing = try await store.source(Query.of(Counted.self, where: [.payload("id"): .bound(id)]))
+        let existing = try await store.source(EventQuery.of(Counted.self, where: [.payload("id"): .bound(id)]))
         guard existing.isEmpty else { throw ScenarioFailure("already counted") }
         try await store.append([Counted(id: id, num: 1), Ignored(id: id)])
     }
@@ -367,13 +367,13 @@ final class Counter: @unchecked Sendable {
 private struct FailingSubscriptions: EventStore {
     struct Boom: Error {}
     let base = InMemoryEventStore()
-    func source(_ query: Query, startPosition: Position?) async throws -> [StoredEvent] {
+    func source(_ query: EventQuery, startPosition: Position?) async throws -> [StoredEvent] {
         try await base.source(query, startPosition: startPosition)
     }
     func append(_ events: [NewEvent], condition: AppendCondition?) async throws -> Position? {
         try await base.append(events, condition: condition)
     }
-    func subscribe(_ query: Query, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
+    func subscribe(_ query: EventQuery, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
         AsyncThrowingStream { $0.finish(throwing: Boom()) }
     }
 }

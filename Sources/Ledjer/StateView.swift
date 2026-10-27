@@ -60,7 +60,7 @@ func route<Handler>(_ event: StoredEvent, among bindings: [(selector: EventSelec
 ///
 /// A `.any` on either side yields to the other. Otherwise a runtime binding
 /// that differs from the selector's own is a conflict.
-func query(for selectors: [EventSelector], narrowedBy runtime: TagBindings = [:]) throws -> Query {
+func query(for selectors: [EventSelector], narrowedBy runtime: TagBindings = [:]) throws -> EventQuery {
     let known = selectors.reduce(into: Set<TagPath>()) { $0.formUnion($1.eventType.tags) }
     let unknown = runtime.keys.filter { !known.contains($0) }
     guard unknown.isEmpty else {
@@ -69,7 +69,7 @@ func query(for selectors: [EventSelector], narrowedBy runtime: TagBindings = [:]
                 + unknown.map(\.description).sorted().joined(separator: ", ")
         )
     }
-    var items: [QueryItem] = []
+    var items: [EventQueryItem] = []
     for selector in selectors {
         try selector.validate()
         let applicable = runtime.filter { selector.eventType.tags.contains($0.key) }
@@ -84,9 +84,9 @@ func query(for selectors: [EventSelector], narrowedBy runtime: TagBindings = [:]
         for (path, own) in selector.tagBindings where !(own == .any && applicable[path] != nil) {
             merged[path] = own
         }
-        items.append(QueryItem(unchecked: [selector.eventType], tagBindings: merged))
+        items.append(EventQueryItem(unchecked: [selector.eventType], tagBindings: merged))
     }
-    return Query(items)
+    return EventQuery(items)
 }
 
 // MARK: - State views

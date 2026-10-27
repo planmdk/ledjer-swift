@@ -38,11 +38,11 @@ public enum LedjerError: Error, CustomStringConvertible {
 ///
 /// Typically `after` is the position of the last event a decision was based on.
 public struct AppendCondition: Sendable {
-    public var query: Query
+    public var query: EventQuery
     /// Exclusive.
     public var after: Position?
 
-    public init(query: Query, after: Position? = nil) {
+    public init(query: EventQuery, after: Position? = nil) {
         self.query = query
         self.after = after
     }
@@ -52,7 +52,7 @@ public struct AppendCondition: Sendable {
 public protocol EventStore: Sendable {
     /// The events matching `query` from `startPosition` (inclusive) on, in
     /// position order.
-    func source(_ query: Query, startPosition: Position?) async throws -> [StoredEvent]
+    func source(_ query: EventQuery, startPosition: Position?) async throws -> [StoredEvent]
 
     /// A stream of the events matching `query`.
     ///
@@ -62,7 +62,7 @@ public protocol EventStore: Sendable {
     /// Events are delivered in order, each once. Ending the stream's
     /// iteration (or cancelling its task) ends the subscription, cleanly: the stream
     /// finishes without an error. A stream has a single consumer: iterate it from one task.
-    func subscribe(_ query: Query, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error>
+    func subscribe(_ query: EventQuery, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error>
 
     /// Atomically appends `events`, subject to `condition`. Returns the
     /// position of the last appended event, or `nil` if `events` is empty.
@@ -73,19 +73,19 @@ public protocol EventStore: Sendable {
     ///
     /// Stores should implement this without reading the events. The default
     /// sources them all.
-    func lastPosition(matching query: Query, through position: Position) async throws -> Position?
+    func lastPosition(matching query: EventQuery, through position: Position) async throws -> Position?
 }
 
 extension EventStore {
-    public func lastPosition(matching query: Query, through position: Position) async throws -> Position? {
+    public func lastPosition(matching query: EventQuery, through position: Position) async throws -> Position? {
         try await source(query, startPosition: nil).last { $0.position <= position }?.position
     }
 
-    public func source(_ query: Query) async throws -> [StoredEvent] {
+    public func source(_ query: EventQuery) async throws -> [StoredEvent] {
         try await source(query, startPosition: nil)
     }
 
-    public func subscribe(_ query: Query) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
+    public func subscribe(_ query: EventQuery) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
         try await subscribe(query, startPosition: nil)
     }
 

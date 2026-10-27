@@ -17,8 +17,8 @@ private func describe(_ events: [StoredEvent]) -> String {
     "[" + events.map { "\($0.type) \(String(decoding: $0.payload, as: UTF8.self))" }.joined(separator: ", ") + "]"
 }
 
-private func eventTypes(of events: [any Event]) -> Query {
-    Query(QueryItem(unchecked: Set(events.map { EventTypeInfo(type(of: $0)) }), tagBindings: [:]))
+private func eventTypes(of events: [any Event]) -> EventQuery {
+    EventQuery(EventQueryItem(unchecked: Set(events.map { EventTypeInfo(type(of: $0)) }), tagBindings: [:]))
 }
 
 private func sameTypeAndPayload(_ actual: [StoredEvent], _ expected: [NewEvent]) -> Bool {

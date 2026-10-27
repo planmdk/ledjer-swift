@@ -529,7 +529,7 @@ struct ScriptedSubscriptions: EventStore {
     let base = InMemoryEventStore()
     let script: Script
 
-    func source(_ query: Query, startPosition: Position?) async throws -> [StoredEvent] {
+    func source(_ query: EventQuery, startPosition: Position?) async throws -> [StoredEvent] {
         try await base.source(query, startPosition: startPosition)
     }
 
@@ -537,7 +537,7 @@ struct ScriptedSubscriptions: EventStore {
         try await base.append(events, condition: condition)
     }
 
-    func subscribe(_ query: Query, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
+    func subscribe(_ query: EventQuery, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
         switch script {
         case .endsCleanly:
             return AsyncThrowingStream { $0.finish() }
@@ -564,7 +564,7 @@ struct CountingSubscriptions: EventStore {
     let base = InMemoryEventStore()
     let active = Counter()
 
-    func source(_ query: Query, startPosition: Position?) async throws -> [StoredEvent] {
+    func source(_ query: EventQuery, startPosition: Position?) async throws -> [StoredEvent] {
         try await base.source(query, startPosition: startPosition)
     }
 
@@ -572,7 +572,7 @@ struct CountingSubscriptions: EventStore {
         try await base.append(events, condition: condition)
     }
 
-    func subscribe(_ query: Query, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
+    func subscribe(_ query: EventQuery, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
         let inner = try await base.subscribe(query, startPosition: startPosition)
         let (stream, continuation) = AsyncThrowingStream<StoredEvent, any Error>.makeStream()
         let forwarder = Task {

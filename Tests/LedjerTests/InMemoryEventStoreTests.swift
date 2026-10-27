@@ -6,11 +6,11 @@ import Testing
 private struct RacyStore: EventStore {
     let inner = InMemoryEventStore()
 
-    func source(_ query: Query, startPosition: Position?) async throws -> [StoredEvent] {
+    func source(_ query: EventQuery, startPosition: Position?) async throws -> [StoredEvent] {
         try await inner.source(query, startPosition: startPosition)
     }
 
-    func subscribe(_ query: Query, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
+    func subscribe(_ query: EventQuery, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
         try await inner.subscribe(query, startPosition: startPosition)
     }
 

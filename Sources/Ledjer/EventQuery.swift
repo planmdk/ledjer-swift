@@ -38,7 +38,7 @@ public struct EventTypeInfo: Hashable, Sendable {
 /// bound tag that the event's type declares, its value equals the bound
 /// value. Bindings for tags the event's type doesn't declare don't apply to
 /// that type.
-public struct QueryItem: Hashable, Sendable {
+public struct EventQueryItem: Hashable, Sendable {
     public let eventTypes: Set<EventTypeInfo>
     public let tagBindings: TagBindings
 
@@ -67,27 +67,27 @@ public struct QueryItem: Hashable, Sendable {
 /// A set of query items, joined by logical OR.
 ///
 /// Queries are validated when constructed, so stores never see an invalid one.
-public struct Query: Hashable, Sendable {
-    public let items: Set<QueryItem>
+public struct EventQuery: Hashable, Sendable {
+    public let items: Set<EventQueryItem>
 
     /// The query flattened to one selector per event type, with the bindings
     /// that apply to it. This is what stores execute.
     public let selectors: Set<Selector>
 
-    public init(_ items: [QueryItem]) {
+    public init(_ items: [EventQueryItem]) {
         let items = Set(items)
         self.items = items
         self.selectors = Self.selectors(of: items)
     }
 
-    public init(_ item: QueryItem) { self.init([item]) }
+    public init(_ item: EventQueryItem) { self.init([item]) }
 
-    public static func == (lhs: Query, rhs: Query) -> Bool { lhs.items == rhs.items }
+    public static func == (lhs: EventQuery, rhs: EventQuery) -> Bool { lhs.items == rhs.items }
     public func hash(into hasher: inout Hasher) { hasher.combine(items) }
 
     /// A query of one item.
-    public static func of(_ eventTypes: any Event.Type..., where tagBindings: TagBindings = [:]) throws -> Query {
-        Query(try QueryItem(eventTypes, where: tagBindings))
+    public static func of(_ eventTypes: any Event.Type..., where tagBindings: TagBindings = [:]) throws -> EventQuery {
+        EventQuery(try EventQueryItem(eventTypes, where: tagBindings))
     }
 
     /// One event type with the exact tag values it must have.
@@ -96,7 +96,7 @@ public struct Query: Hashable, Sendable {
         public let required: [TagPath: Scalar]
     }
 
-    private static func selectors(of items: Set<QueryItem>) -> Set<Selector> {
+    private static func selectors(of items: Set<EventQueryItem>) -> Set<Selector> {
         var result = Set<Selector>()
         for item in items {
             for info in item.eventTypes {

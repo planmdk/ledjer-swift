@@ -59,7 +59,7 @@ import Testing
         let pool = try DatabasePool(path: path)
         try later.migrate(pool)
         let store = try GRDBEventStore(pool)
-        let events = try await store.source(Query.of(UUIDTagged.self))
+        let events = try await store.source(EventQuery.of(UUIDTagged.self))
         #expect(events.count == 1)
     }
 

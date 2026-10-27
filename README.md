@@ -17,6 +17,7 @@ Requires Swift 6.1, iOS 16 / macOS 13.
 | Event Modeling   | Clojure                | Swift                                         |
 |------------------|------------------------|-----------------------------------------------|
 | event            | `defevent`             | `struct: Event`                               |
+| query            | `Query` of `QueryMap`s | `EventQuery` of `EventQueryItem`s             |
 | state view       | `defview`              | `StateView`                                   |
 | persisted view   | `defpersistedview`     | `PersistedStateView` → `PersistedViewHandle`  |
 | automation       | `automation`           | `automation(on:triggers:onError:body:)`       |
@@ -35,7 +36,7 @@ let store = try GRDBEventStore(dbPool)
 
 // A state change: decide from events, append with a consistency condition.
 let account = "a"
-let balanceQuery = try Query.of(Deposited.self, Withdrawn.self, where: [.payload("account"): .bound(account)])
+let balanceQuery = try EventQuery.of(Deposited.self, Withdrawn.self, where: [.payload("account"): .bound(account)])
 let seen = try await store.source(balanceQuery)
 try await store.append(
     [Withdrawn(account: account, amount: 10)],
@@ -74,7 +75,7 @@ or equal events can compare unequal.
 
 - **Typed, not dynamic.** Events are `Codable` structs and their type is their schema, so there is no
   malli. Tags are declared with key paths (`EventTag("id", \.id)`). Queries are validated when
-  constructed (`try Query.of(...)`), so stores never see an invalid one.
+  constructed (`try EventQuery.of(...)`), so stores never see an invalid one.
 - **Tag values are typed**: `String`, `Int`, `Bool`, `UUID`, compared by type and value. The `"*"`
   wildcard string is `.any`.
 - **Strings match by their UTF-8 bytes**, as in Clojure and the GRDB store, not by Unicode canonical
@@ -172,7 +173,8 @@ or equal events can compare unequal.
   differently can encode in another order, and the scenario then fails although the events are equal.
   The JSON doesn't say whether an array was a set, so comparing arrays as multisets would weaken the
   check for ordered ones. Use ordered collections (a sorted array) in events that scenarios compare.
-- The types are named `StateView`, `EventTag`, … to stay clear of SwiftUI's `View` and Swift Testing's `Tag`.
+- The types are named `StateView`, `EventTag`, `EventQuery`, … to stay clear of SwiftUI's `View`, Swift
+  Testing's `Tag` and SwiftData's `Query`.
 
 ## The GRDB store
 

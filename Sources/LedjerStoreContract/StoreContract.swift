@@ -47,9 +47,9 @@ public enum StoreContract {
         try check(first == 1, "first position is 1, got \(String(describing: first))")
         let last = try await store.append([UUIDTagged(id: UUID(), num: 2), UUIDTagged(id: UUID(), num: 3)])
         try check(last == 3, "append returns the last position, got \(String(describing: last))")
-        let all = try await store.source(Query.of(UUIDTagged.self))
+        let all = try await store.source(EventQuery.of(UUIDTagged.self))
         try check(all.map(\.position) == [1, 2, 3], "positions \(all.map(\.position))")
-        let tail = try await store.source(Query.of(UUIDTagged.self), startPosition: 2)
+        let tail = try await store.source(EventQuery.of(UUIDTagged.self), startPosition: 2)
         try check(tail.map(\.position) == [2, 3], "startPosition is inclusive: \(tail.map(\.position))")
         let decoded = try tail.map { try $0.decode(UUIDTagged.self).num }
         try check(decoded == [2, 3], "payloads round-trip: \(decoded)")
@@ -59,17 +59,17 @@ public enum StoreContract {
         let store = try await makeStore()
         let (id1, id2) = (UUID(), UUID())
         try await store.append([UUIDTagged(id: id1, num: 1), UUIDTagged(id: id2, num: 2)])
-        func nums(_ query: Query) async throws -> [Int] {
+        func nums(_ query: EventQuery) async throws -> [Int] {
             try await store.source(query).map { try $0.decode(UUIDTagged.self).num }
         }
         let path = TagPath.payload("id")
-        let bound = try await nums(Query.of(UUIDTagged.self, where: [path: .bound(id1)]))
+        let bound = try await nums(EventQuery.of(UUIDTagged.self, where: [path: .bound(id1)]))
         try check(bound == [1], "bound to a UUID: \(bound)")
-        let unbound = try await nums(Query.of(UUIDTagged.self))
+        let unbound = try await nums(EventQuery.of(UUIDTagged.self))
         try check(unbound == [1, 2], "unbound: \(unbound)")
-        let wildcard = try await nums(Query.of(UUIDTagged.self, where: [path: .any]))
+        let wildcard = try await nums(EventQuery.of(UUIDTagged.self, where: [path: .any]))
         try check(wildcard == [1, 2], "wildcard: \(wildcard)")
-        let wrongType = try await nums(Query.of(UUIDTagged.self, where: [path: .bound(id1.uuidString)]))
+        let wrongType = try await nums(EventQuery.of(UUIDTagged.self, where: [path: .bound(id1.uuidString)]))
         try check(wrongType.isEmpty, "values match on type as well as value: \(wrongType)")
     }
 
@@ -85,43 +85,43 @@ public enum StoreContract {
             VersionTagged(id: "v"),
         ])
         let byOrder = try await store.source(
-            Query.of(OrderPlaced.self, OrderNoted.self, where: [.payload("orderId"): .bound(wanted)])
+            EventQuery.of(OrderPlaced.self, OrderNoted.self, where: [.payload("orderId"): .bound(wanted)])
         )
         try check(byOrder.map(\.position) == [1, 4], "bindings apply only to types with the tag: \(byOrder.map(\.position))")
 
         let byCustomer = try await store.source(
-            Query.of(OrderPlaced.self, where: [.payload("customer"): "bob"])
+            EventQuery.of(OrderPlaced.self, where: [.payload("customer"): "bob"])
         )
         try check(byCustomer.map(\.position) == [2], "string tag: \(byCustomer.map(\.position))")
 
         let anyCustomer = try await store.source(
-            Query.of(OrderPlaced.self, where: [.payload("customer"): .any])
+            EventQuery.of(OrderPlaced.self, where: [.payload("customer"): .any])
         )
         try check(anyCustomer.map(\.position) == [1, 2, 3], "wildcard matches events without the tag: \(anyCustomer.map(\.position))")
 
-        let byVersion = try await store.source(Query.of(VersionTagged.self, where: [.metadata("version"): 2]))
+        let byVersion = try await store.source(EventQuery.of(VersionTagged.self, where: [.metadata("version"): 2]))
         try check(byVersion.map(\.position) == [5], "metadata tag: \(byVersion.map(\.position))")
-        let wrongVersion = try await store.source(Query.of(VersionTagged.self, where: [.metadata("version"): 1]))
+        let wrongVersion = try await store.source(EventQuery.of(VersionTagged.self, where: [.metadata("version"): 1]))
         try check(wrongVersion.isEmpty, "metadata tag, other value: \(wrongVersion.map(\.position))")
 
         let union = try await store.source(
-            Query([
-                try QueryItem([OrderPlaced.self], where: [.payload("customer"): "ann"]),
-                try QueryItem([OrderPlaced.self], where: [.payload("customer"): "bob"]),
-                try QueryItem([OrderNoted.self]),
+            EventQuery([
+                try EventQueryItem([OrderPlaced.self], where: [.payload("customer"): "ann"]),
+                try EventQueryItem([OrderPlaced.self], where: [.payload("customer"): "bob"]),
+                try EventQueryItem([OrderNoted.self]),
             ])
         )
         try check(union.map(\.position) == [1, 2, 4], "items are joined by OR: \(union.map(\.position))")
 
         let overlapping = try await store.source(
-            Query([
-                try QueryItem([OrderPlaced.self]),
-                try QueryItem([OrderPlaced.self], where: [.payload("customer"): "ann"]),
+            EventQuery([
+                try EventQueryItem([OrderPlaced.self]),
+                try EventQueryItem([OrderPlaced.self], where: [.payload("customer"): "ann"]),
             ])
         )
         try check(overlapping.map(\.position) == [1, 2, 3], "an event matching several items is returned once: \(overlapping.map(\.position))")
 
-        let invalid = Result { try QueryItem([OrderNoted.self], where: [.payload("orderId"): "x"]) }
+        let invalid = Result { try EventQueryItem([OrderNoted.self], where: [.payload("orderId"): "x"]) }
         try check({ if case .failure = invalid { true } else { false } }(), "binding for a tag no type has is invalid")
     }
 
@@ -137,7 +137,7 @@ public enum StoreContract {
             Flagged(n: Int.max, active: true),  // 6
         ])
         func positions(_ bindings: TagBindings) async throws -> [Position] {
-            try await store.source(Query.of(Flagged.self, where: bindings)).map(\.position)
+            try await store.source(EventQuery.of(Flagged.self, where: bindings)).map(\.position)
         }
         let (n, active) = (TagPath.payload("n"), TagPath.payload("active"))
         let one = try await positions([n: .bound(1)])
@@ -166,17 +166,17 @@ public enum StoreContract {
         try check(stringForBool.isEmpty, "the string \"true\" doesn't match the Bool true: \(stringForBool)")
 
         let lastOne = try await store.lastPosition(
-            matching: Query.of(Flagged.self, where: [n: .bound(1)]), through: 3)
+            matching: EventQuery.of(Flagged.self, where: [n: .bound(1)]), through: 3)
         try check(lastOne == 2, "lastPosition by an Int tag: \(String(describing: lastOne))")
         let lastInactive = try await store.lastPosition(
-            matching: Query.of(Flagged.self, where: [active: .bound(false)]), through: 6)
+            matching: EventQuery.of(Flagged.self, where: [active: .bound(false)]), through: 6)
         try check(lastInactive == 5, "lastPosition by a Bool tag: \(String(describing: lastInactive))")
 
         var failed = false
         do {
             try await store.append(
                 [Flagged(n: 9, active: false)],
-                condition: AppendCondition(query: try Query.of(Flagged.self, where: [n: .bound(2), active: .bound(true)]))
+                condition: AppendCondition(query: try EventQuery.of(Flagged.self, where: [n: .bound(2), active: .bound(true)]))
             )
         } catch LedjerError.appendConditionFailed {
             failed = true
@@ -184,7 +184,7 @@ public enum StoreContract {
         try check(failed, "a condition on Int and Bool tags fails when an event matches")
         let passed = try await store.append(
             [Flagged(n: 9, active: false)],
-            condition: AppendCondition(query: try Query.of(Flagged.self, where: [n: .bound(2), active: .bound(false)]))
+            condition: AppendCondition(query: try EventQuery.of(Flagged.self, where: [n: .bound(2), active: .bound(false)]))
         )
         try check(passed == 7, "a condition on Int and Bool tags passes when none matches: \(String(describing: passed))")
     }
@@ -200,13 +200,13 @@ public enum StoreContract {
         let store = try await makeStore()
         try await store.append([StringTagged(name: "alice" + nul + "evil")])  // 1
         func positions(_ value: String) async throws -> [Position] {
-            try await store.source(Query.of(StringTagged.self, where: [name: .bound(value)])).map(\.position)
+            try await store.source(EventQuery.of(StringTagged.self, where: [name: .bound(value)])).map(\.position)
         }
         func fails(_ value: String) async throws -> Bool {
             do {
                 try await store.append(
                     [StringTagged(name: "unrelated")],
-                    condition: AppendCondition(query: try Query.of(StringTagged.self, where: [name: .bound(value)])))
+                    condition: AppendCondition(query: try EventQuery.of(StringTagged.self, where: [name: .bound(value)])))
                 return false
             } catch LedjerError.appendConditionFailed {
                 return true
@@ -231,16 +231,16 @@ public enum StoreContract {
         let other = try await positions("alice" + nul + "other")
         try check(other.isEmpty, "a different suffix after the NUL: \(other)")
         let both = try await store.source(
-            Query([
-                try QueryItem([StringTagged.self], where: [name: .bound("alice")]),
-                try QueryItem([StringTagged.self], where: [name: .bound("alice" + nul + "evil")]),
+            EventQuery([
+                try EventQueryItem([StringTagged.self], where: [name: .bound("alice")]),
+                try EventQueryItem([StringTagged.self], where: [name: .bound("alice" + nul + "evil")]),
             ])
         ).map(\.position)
         try check(both == [1, 3], "a query for both: \(both)")
         let last = try await store.lastPosition(
-            matching: Query.of(StringTagged.self, where: [name: .bound("alice")]), through: 5)
+            matching: EventQuery.of(StringTagged.self, where: [name: .bound("alice")]), through: 5)
         try check(last == 3, "lastPosition: \(String(describing: last))")
-        let decoded = try await store.source(Query.of(StringTagged.self, where: [name: .bound("alice" + nul + "evil")]))
+        let decoded = try await store.source(EventQuery.of(StringTagged.self, where: [name: .bound("alice" + nul + "evil")]))
             .map { try $0.decode(StringTagged.self).name }
         try check(decoded == ["alice" + nul + "evil"], "the payload keeps the NUL")
 
@@ -248,7 +248,7 @@ public enum StoreContract {
         let keys = try await makeStore()
         try await keys.append([NulKeys(plain: "1", other: "2")])
         func keyed(_ key: String, _ value: String) async throws -> [Position] {
-            try await keys.source(Query.of(NulKeys.self, where: [.payload(key): .bound(value)])).map(\.position)
+            try await keys.source(EventQuery.of(NulKeys.self, where: [.payload(key): .bound(value)])).map(\.position)
         }
         let plainTag = try await keyed("k", "1")
         try check(plainTag == [1], "tag \"k\": \(plainTag)")
@@ -260,11 +260,11 @@ public enum StoreContract {
         // Event types that differ only after a NUL.
         let types = try await makeStore()
         try await types.append([NulTypeShort(), NulTypeLong(), NulTypeShort()])
-        let short = try await types.source(Query.of(NulTypeShort.self)).map(\.position)
+        let short = try await types.source(EventQuery.of(NulTypeShort.self)).map(\.position)
         try check(short == [1, 3], "event type \"contract/nul\": \(short)")
-        let long = try await types.source(Query.of(NulTypeLong.self)).map(\.position)
+        let long = try await types.source(EventQuery.of(NulTypeLong.self)).map(\.position)
         try check(long == [2], "event type \"contract/nul\\0long\": \(long)")
-        let longEvents = try await types.source(Query.of(NulTypeLong.self))
+        let longEvents = try await types.source(EventQuery.of(NulTypeLong.self))
         try check(longEvents.map(\.type) == [NulTypeLong.eventType], "the stored type keeps the NUL")
     }
 
@@ -279,19 +279,19 @@ public enum StoreContract {
         let store = try await makeStore()
         try await store.append([StringTagged(name: nfc)])  // 1
         func positions(_ value: String) async throws -> [Position] {
-            try await store.source(Query.of(StringTagged.self, where: [name: .bound(value)])).map(\.position)
+            try await store.source(EventQuery.of(StringTagged.self, where: [name: .bound(value)])).map(\.position)
         }
         let early = try await positions(nfd)
         try check(early.isEmpty, "NFD doesn't match NFC: \(early)")
         let passed = try await store.append(
             [StringTagged(name: nfd)],  // 2
-            condition: AppendCondition(query: try Query.of(StringTagged.self, where: [name: .bound(nfd)])))
+            condition: AppendCondition(query: try EventQuery.of(StringTagged.self, where: [name: .bound(nfd)])))
         try check(passed == 2, "a condition on NFD passes when only NFC exists: \(String(describing: passed))")
         let failedOnNFC: Bool
         do {
             try await store.append(
                 [StringTagged(name: "x")],
-                condition: AppendCondition(query: try Query.of(StringTagged.self, where: [name: .bound(nfc)])))
+                condition: AppendCondition(query: try EventQuery.of(StringTagged.self, where: [name: .bound(nfc)])))
             failedOnNFC = false
         } catch LedjerError.appendConditionFailed {
             failedOnNFC = true
@@ -300,16 +300,16 @@ public enum StoreContract {
         let (onlyNFC, onlyNFD) = (try await positions(nfc), try await positions(nfd))
         try check(onlyNFC == [1] && onlyNFD == [2], "both coexist: NFC \(onlyNFC), NFD \(onlyNFD)")
         let both = try await store.source(
-            Query([
-                try QueryItem([StringTagged.self], where: [name: .bound(nfc)]),
-                try QueryItem([StringTagged.self], where: [name: .bound(nfd)]),
+            EventQuery([
+                try EventQueryItem([StringTagged.self], where: [name: .bound(nfc)]),
+                try EventQueryItem([StringTagged.self], where: [name: .bound(nfd)]),
             ])
         ).map(\.position)
         try check(both == [1, 2], "a query with both forms returns both: \(both)")
         let last = try await store.lastPosition(
-            matching: Query.of(StringTagged.self, where: [name: .bound(nfc)]), through: 2)
+            matching: EventQuery.of(StringTagged.self, where: [name: .bound(nfc)]), through: 2)
         try check(last == 1, "lastPosition: \(String(describing: last))")
-        let names = try await store.source(Query.of(StringTagged.self)).map { try $0.decode(StringTagged.self).name }
+        let names = try await store.source(EventQuery.of(StringTagged.self)).map { try $0.decode(StringTagged.self).name }
         try check(
             names.count == 2 && names[0].utf8.elementsEqual(nfc.utf8) && names[1].utf8.elementsEqual(nfd.utf8),
             "the payloads keep their spelling")
@@ -318,7 +318,7 @@ public enum StoreContract {
         let keys = try await makeStore()
         try await keys.append([NormalizedKeys(precomposed: "1", decomposed: "2")])
         func keyed(_ key: String, _ value: String) async throws -> [Position] {
-            try await keys.source(Query.of(NormalizedKeys.self, where: [.payload(key): .bound(value)])).map(\.position)
+            try await keys.source(EventQuery.of(NormalizedKeys.self, where: [.payload(key): .bound(value)])).map(\.position)
         }
         let a = try await keyed(nfc, "1")
         let b = try await keyed(nfd, "2")
@@ -328,10 +328,10 @@ public enum StoreContract {
         // Event types.
         let types = try await makeStore()
         try await types.append([NFCType(), NFDType(), NFCType()])
-        let precomposed = try await types.source(Query.of(NFCType.self)).map(\.position)
-        let decomposed = try await types.source(Query.of(NFDType.self)).map(\.position)
+        let precomposed = try await types.source(EventQuery.of(NFCType.self)).map(\.position)
+        let decomposed = try await types.source(EventQuery.of(NFDType.self)).map(\.position)
         try check(precomposed == [1, 3] && decomposed == [2], "event types: \(precomposed) \(decomposed)")
-        let bothTypes = try await types.source(Query.of(NFCType.self, NFDType.self)).map(\.position)
+        let bothTypes = try await types.source(EventQuery.of(NFCType.self, NFDType.self)).map(\.position)
         try check(bothTypes == [1, 2, 3], "a query for both types: \(bothTypes)")
     }
 
@@ -340,10 +340,10 @@ public enum StoreContract {
     public static func failedConditionalAppendsAreNotDelivered(_ makeStore: StoreFactory) async throws {
         let store = try await makeStore()
         let order = UUID()
-        let placed = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(order)])
+        let placed = try EventQuery.of(OrderPlaced.self, where: [.payload("orderId"): .bound(order)])
         try await store.append([OrderPlaced(orderId: order)])  // 1
-        let live = Collector(try await store.subscribe(Query.of(OrderPlaced.self)))
-        let replaying = Collector(try await store.subscribe(Query.of(OrderPlaced.self), startPosition: 1))
+        let live = Collector(try await store.subscribe(EventQuery.of(OrderPlaced.self)))
+        let replaying = Collector(try await store.subscribe(EventQuery.of(OrderPlaced.self), startPosition: 1))
 
         var failures = 0
         for _ in 0..<3 {
@@ -380,7 +380,7 @@ public enum StoreContract {
             [UUIDTagged(id: UUID(), num: 1)],
             metadata: ["correlation": .uuid(correlation), "happy": .bool(true), "n": .int(7), "who": .string("me")]
         )
-        let events = try await store.source(Query.of(UUIDTagged.self))
+        let events = try await store.source(EventQuery.of(UUIDTagged.self))
         let expected: Metadata = [
             "correlation": .uuid(correlation), "happy": .bool(true), "n": .int(7), "who": .string("me"),
             "version": .int(1),
@@ -391,7 +391,7 @@ public enum StoreContract {
     public static func appendConditions(_ makeStore: StoreFactory) async throws {
         let store = try await makeStore()
         let order = UUID()
-        let placed = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(order)])
+        let placed = try EventQuery.of(OrderPlaced.self, where: [.payload("orderId"): .bound(order)])
 
         // Nothing matches yet, so a condition without `after` passes.
         let first = try await store.append(
@@ -408,7 +408,7 @@ public enum StoreContract {
             failed = true
         }
         try check(failed, "condition fails when a matching event exists")
-        let afterFailed = try await store.source(Query.of(OrderPlaced.self))
+        let afterFailed = try await store.source(EventQuery.of(OrderPlaced.self))
         try check(afterFailed.count == 1, "nothing is appended when the condition fails: \(afterFailed.count)")
 
         // `after` is exclusive: the event at position 1 is not after 1.
@@ -437,7 +437,7 @@ public enum StoreContract {
         // The events of the append itself don't conflict with its condition.
         let own = try await store.append(
             [OrderPlaced(orderId: UUID()), OrderPlaced(orderId: UUID())],
-            condition: AppendCondition(query: try Query.of(OrderPlaced.self), after: 3)
+            condition: AppendCondition(query: try EventQuery.of(OrderPlaced.self), after: 3)
         )
         try check(own == 5, "an append doesn't conflict with itself: \(String(describing: own))")
 
@@ -458,7 +458,7 @@ public enum StoreContract {
         let writers = 8
         for round in 0..<50 {
             let order = UUID()
-            let placed = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(order)])
+            let placed = try EventQuery.of(OrderPlaced.self, where: [.payload("orderId"): .bound(order)])
             let successes = try await withThrowingTaskGroup(of: Bool.self) { group in
                 for _ in 0..<writers {
                     group.addTask {
@@ -487,23 +487,23 @@ public enum StoreContract {
             OrderPlaced(orderId: b),  // 3
             OrderPlaced(orderId: a),  // 4
         ])
-        func last(_ query: Query, through: Position) async throws -> Position? {
+        func last(_ query: EventQuery, through: Position) async throws -> Position? {
             try await store.lastPosition(matching: query, through: through)
         }
-        let placed = try Query.of(OrderPlaced.self)
+        let placed = try EventQuery.of(OrderPlaced.self)
         for (through, expected) in [(4, 4), (3, 3), (2, 1), (1, 1), (0, nil), (100, 4)] as [(Int, Int?)] {
             let got = try await last(placed, through: through)
             try check(got == expected, "last placed through \(through): \(String(describing: got)), expected \(String(describing: expected))")
         }
-        let ofA = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(a)])
+        let ofA = try EventQuery.of(OrderPlaced.self, where: [.payload("orderId"): .bound(a)])
         let gotA = try await last(ofA, through: 3)
         try check(gotA == 1, "tagged: \(String(describing: gotA))")
-        let ofB = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(b)])
+        let ofB = try EventQuery.of(OrderPlaced.self, where: [.payload("orderId"): .bound(b)])
         let gotB = try await last(ofB, through: 4)
         try check(gotB == 3, "tagged, another: \(String(describing: gotB))")
-        let none = try await last(try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(UUID())]), through: 4)
+        let none = try await last(try EventQuery.of(OrderPlaced.self, where: [.payload("orderId"): .bound(UUID())]), through: 4)
         try check(none == nil, "nothing matches: \(String(describing: none))")
-        let union = Query([try QueryItem([OrderNoted.self]), try QueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(b)])])
+        let union = EventQuery([try EventQueryItem([OrderNoted.self]), try EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(b)])])
         let gotUnion = try await last(union, through: 4)
         try check(gotUnion == 3, "union: \(String(describing: gotUnion))")
         let unionEarly = try await last(union, through: 2)
@@ -512,7 +512,7 @@ public enum StoreContract {
 
     public static func subscribeFromNow(_ makeStore: StoreFactory) async throws {
         let store = try await makeStore()
-        let query = try Query.of(OrderPlaced.self)
+        let query = try EventQuery.of(OrderPlaced.self)
 
         // Every subscription gets every event, and only those appended after subscribing.
         let before = UUID()
@@ -528,7 +528,7 @@ public enum StoreContract {
 
         // Selection works like source does.
         let wanted = UUID()
-        let tagged = try Query.of(OrderPlaced.self, OrderNoted.self, where: [.payload("orderId"): .bound(wanted)])
+        let tagged = try EventQuery.of(OrderPlaced.self, OrderNoted.self, where: [.payload("orderId"): .bound(wanted)])
         let c3 = Collector(try await store.subscribe(tagged))
         try await store.append([
             OrderPlaced(orderId: wanted), OrderPlaced(orderId: UUID()), OrderNoted(orderId: UUID(), note: "x"),
@@ -541,9 +541,9 @@ public enum StoreContract {
         let id = UUID()
         let c4 = Collector(
             try await store.subscribe(
-                Query([
-                    try QueryItem([OrderPlaced.self]),
-                    try QueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(id)]),
+                EventQuery([
+                    try EventQueryItem([OrderPlaced.self]),
+                    try EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(id)]),
                 ])
             )
         )
@@ -554,7 +554,7 @@ public enum StoreContract {
     }
 
     public static func subscribeWithStartPosition(_ makeStore: StoreFactory) async throws {
-        let query = try Query.of(OrderPlaced.self)
+        let query = try EventQuery.of(OrderPlaced.self)
         func appendOrders(_ store: any EventStore, _ n: Int) async throws -> [UUID] {
             let ids = (0..<n).map { _ in UUID() }
             try await store.append(ids.map { OrderPlaced(orderId: $0) })
@@ -603,7 +603,7 @@ public enum StoreContract {
             try await store.append([
                 OrderPlaced(orderId: wanted), OrderNoted(orderId: UUID(), note: "x"), OrderPlaced(orderId: UUID()),
             ])
-            let tagged = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(wanted)])
+            let tagged = try EventQuery.of(OrderPlaced.self, where: [.payload("orderId"): .bound(wanted)])
             let c = Collector(try await store.subscribe(tagged, startPosition: 0))
             let got = try orderIds(try await c.settled())
             try check(got == [wanted], "replay selects by tags: \(got.count)")
@@ -635,7 +635,7 @@ public enum StoreContract {
 
     public static func subscribeTerminationDoesNotDisturbAppends(_ makeStore: StoreFactory) async throws {
         let store = try await makeStore()
-        let c = Collector(try await store.subscribe(Query.of(OrderPlaced.self)))
+        let c = Collector(try await store.subscribe(EventQuery.of(OrderPlaced.self)))
         c.cancel()
         try await Task.sleep(for: .milliseconds(100))
         let position = try await store.append([OrderPlaced(orderId: UUID())])
@@ -648,7 +648,7 @@ public enum StoreContract {
     public static func cancellingAConsumerEndsTheStreamWithoutAnError(_ makeStore: StoreFactory) async throws {
         let store = try await makeStore()
         try await store.append((0..<4000).map { UUIDTagged(id: UUID(), num: $0) })
-        let query = try Query.of(UUIDTagged.self)
+        let query = try EventQuery.of(UUIDTagged.self)
 
         var failures: [String] = []
         for round in 0..<60 {

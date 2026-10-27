@@ -302,7 +302,7 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
 
     private let store: any EventStore
     private let routes: [Route]
-    private let query: Query
+    private let query: EventQuery
     private let acc: Accumulator
     private let options: PersistedViewOptions
     private let state = PersistedViewState()
@@ -313,7 +313,7 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
     private var pump: Task<Void, Never>?
     private var shutdownTask: Task<Void, Never>?
 
-    init(store: any EventStore, routes: [Route], query: Query, accumulator: Accumulator, options: PersistedViewOptions) {
+    init(store: any EventStore, routes: [Route], query: EventQuery, accumulator: Accumulator, options: PersistedViewOptions) {
         self.store = store
         self.routes = routes
         self.query = query

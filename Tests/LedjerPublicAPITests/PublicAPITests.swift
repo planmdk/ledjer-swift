@@ -33,7 +33,7 @@ struct Reminded: Event {
 /// An `EventStore` written against the public API only.
 actor ThirdPartyStore: EventStore {
     private struct Subscriber {
-        var query: Query
+        var query: EventQuery
         var from: Position
         var continuation: AsyncThrowingStream<StoredEvent, any Error>.Continuation
     }
@@ -41,15 +41,15 @@ actor ThirdPartyStore: EventStore {
     private var log: [(event: StoredEvent, tags: [TagPath: Scalar])] = []
     private var subscribers: [UUID: Subscriber] = [:]
 
-    private func select(_ query: Query, from: Position) -> [StoredEvent] {
+    private func select(_ query: EventQuery, from: Position) -> [StoredEvent] {
         log.filter { $0.event.position >= from && query.matches(type: $0.event.type, tags: $0.tags) }.map(\.event)
     }
 
-    func source(_ query: Query, startPosition: Position?) async throws -> [StoredEvent] {
+    func source(_ query: EventQuery, startPosition: Position?) async throws -> [StoredEvent] {
         select(query, from: startPosition ?? 0)
     }
 
-    func subscribe(_ query: Query, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
+    func subscribe(_ query: EventQuery, startPosition: Position?) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
         let id = UUID()
         let from = startPosition ?? (log.count + 1)
         let (stream, continuation) = AsyncThrowingStream<StoredEvent, any Error>.makeStream()
@@ -94,7 +94,7 @@ let balance = StateView(initial: 0, bindings: [
 
 /// A state change: decide from events, append with a consistency condition.
 func withdraw(_ store: any EventStore, _ account: String, _ amount: Int) async throws {
-    let query = try Query.of(Deposited.self, Withdrawn.self, where: [.payload("account"): .bound(account)])
+    let query = try EventQuery.of(Deposited.self, Withdrawn.self, where: [.payload("account"): .bound(account)])
     let seen = try await store.source(query)
     let current = try await balance.run(on: store, where: [.payload("account"): .bound(account)])
     guard current >= amount else { throw InsufficientFunds() }

@@ -211,7 +211,7 @@ private actor GatedAccumulator: PersistedAccumulator {
         let store = try GRDBEventStore(queue)
         try await store.append((0..<3000).map { Deposited(account: "a", amount: $0) })
 
-        let stream = try await store.subscribe(Query.of(Deposited.self), startPosition: 0)
+        let stream = try await store.subscribe(EventQuery.of(Deposited.self), startPosition: 0)
         var iterator = stream.makeAsyncIterator()
         for _ in 0..<10 { _ = try await iterator.next() }
         #expect(reads.count == 1, "10 events asked for, one batch of 500 read: \(reads.count)")

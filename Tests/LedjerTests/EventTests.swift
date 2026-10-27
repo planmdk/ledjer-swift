@@ -46,22 +46,22 @@ struct TestEvent2: Event {
     }
 }
 
-@Suite struct QueryTests {
+@Suite struct EventQueryTests {
     @Test func validQueries() throws {
-        _ = try Query.of(OrderPlaced.self)
-        _ = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .any])
+        _ = try EventQuery.of(OrderPlaced.self)
+        _ = try EventQuery.of(OrderPlaced.self, where: [.payload("orderId"): .any])
         // A binding needs only to be a tag of one of the event types.
-        _ = try Query.of(OrderPlaced.self, OrderNoted.self, where: [.payload("orderId"): .bound(UUID())])
+        _ = try EventQuery.of(OrderPlaced.self, OrderNoted.self, where: [.payload("orderId"): .bound(UUID())])
     }
 
     @Test func unknownTagPathIsInvalid() {
-        #expect(throws: LedjerError.self) { try Query.of(OrderNoted.self, where: [.payload("orderId"): "x"]) }
-        #expect(throws: LedjerError.self) { try Query.of(OrderPlaced.self, where: [.metadata("version"): 1]) }
+        #expect(throws: LedjerError.self) { try EventQuery.of(OrderNoted.self, where: [.payload("orderId"): "x"]) }
+        #expect(throws: LedjerError.self) { try EventQuery.of(OrderPlaced.self, where: [.metadata("version"): 1]) }
     }
 
     @Test func selectorsOnlyKeepBindingsOfTheTypesTags() throws {
         let id = UUID()
-        let query = try Query.of(OrderPlaced.self, OrderNoted.self, where: [.payload("orderId"): .bound(id)])
+        let query = try EventQuery.of(OrderPlaced.self, OrderNoted.self, where: [.payload("orderId"): .bound(id)])
         let byType = Dictionary(uniqueKeysWithValues: query.selectors.map { ($0.type, $0.required) })
         #expect(byType["contract/order-placed"] == [.payload("orderId"): .uuid(id)])
         #expect(byType["contract/order-noted"] == [:])
@@ -79,29 +79,29 @@ struct TestEvent2: Event {
         #expect(Scalar.string(nfc) == Scalar.string(String(nfc)))
 
         let name = TagPath.payload("name")
-        let query = Query([
-            try QueryItem([StoreContract.StringTagged.self], where: [name: .bound(nfc)]),
-            try QueryItem([StoreContract.StringTagged.self], where: [name: .bound(nfd)]),
+        let query = EventQuery([
+            try EventQueryItem([StoreContract.StringTagged.self], where: [name: .bound(nfc)]),
+            try EventQueryItem([StoreContract.StringTagged.self], where: [name: .bound(nfd)]),
         ])
         #expect(query.items.count == 2)
         #expect(query.selectors.count == 2)
         #expect(query.matches(type: "contract/string-tagged", tags: [name: .string(nfc)]))
         #expect(query.matches(type: "contract/string-tagged", tags: [name: .string(nfd)]))
-        let onlyNFC = try Query.of(StoreContract.StringTagged.self, where: [name: .bound(nfc)])
+        let onlyNFC = try EventQuery.of(StoreContract.StringTagged.self, where: [name: .bound(nfc)])
         #expect(!onlyNFC.matches(type: "contract/string-tagged", tags: [name: .string(nfd)]))
         #expect(!onlyNFC.matches(type: EventType("contract/string-tagged"), tags: [TagPath.payload(nfc): .string(nfc)]))
 
-        let types = try Query.of(StoreContract.NFCType.self, StoreContract.NFDType.self)
+        let types = try EventQuery.of(StoreContract.NFCType.self, StoreContract.NFDType.self)
         #expect(types.selectors.count == 2)
-        #expect(!(try Query.of(StoreContract.NFCType.self)).matches(type: StoreContract.NFDType.eventType, tags: [:]))
+        #expect(!(try EventQuery.of(StoreContract.NFCType.self)).matches(type: StoreContract.NFDType.eventType, tags: [:]))
 
-        let keys = try Query.of(StoreContract.NormalizedKeys.self, where: [.payload(nfc): "1", .payload(nfd): "2"])
+        let keys = try EventQuery.of(StoreContract.NormalizedKeys.self, where: [.payload(nfc): "1", .payload(nfd): "2"])
         #expect(keys.selectors.first?.required.count == 2)
     }
 
     @Test func matching() throws {
         let id = UUID()
-        let query = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(id), .payload("customer"): .any])
+        let query = try EventQuery.of(OrderPlaced.self, where: [.payload("orderId"): .bound(id), .payload("customer"): .any])
         #expect(query.matches(type: "contract/order-placed", tags: [.payload("orderId"): .uuid(id)]))
         #expect(!query.matches(type: "contract/order-placed", tags: [.payload("orderId"): .uuid(UUID())]))
         #expect(!query.matches(type: "contract/order-placed", tags: [:]))

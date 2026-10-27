@@ -42,7 +42,7 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
         let store = try GRDBEventStore(DatabasePool(path: path))
         let position = try await store.append([UUIDTagged(id: UUID(), num: 2)])
         #expect(position == 2)
-        let found = try await store.source(Query.of(UUIDTagged.self, where: [.payload("id"): .bound(id)]))
+        let found = try await store.source(EventQuery.of(UUIDTagged.self, where: [.payload("id"): .bound(id)]))
         #expect(try found.map { try $0.decode(UUIDTagged.self).num } == [1])
     }
 
@@ -51,7 +51,7 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
         let store = try GRDBEventStore(queue)
         let order = UUID()
         try await store.append([OrderPlaced(orderId: order)])
-        let condition = AppendCondition(query: try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(order)]))
+        let condition = AppendCondition(query: try EventQuery.of(OrderPlaced.self, where: [.payload("orderId"): .bound(order)]))
         await #expect(throws: LedjerError.self) {
             try await store.append([OrderPlaced(orderId: UUID()), OrderPlaced(orderId: UUID())], condition: condition)
         }
@@ -63,8 +63,8 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
     }
 
     /// A query of `count` selectors: one item of the same type per order, so each is a branch of the union.
-    private func query(selectors count: Int) -> Query {
-        Query((0..<count).map { _ in try! QueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())]) })
+    private func query(selectors count: Int) -> EventQuery {
+        EventQuery((0..<count).map { _ in try! EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())]) })
     }
 
     @Test func aQueryOfTheMaximumNumberOfSelectorsWorks() async throws {
@@ -72,9 +72,9 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
         let order = UUID()
         let first = try await store.append([OrderPlaced(orderId: order)])!
         let items = (0..<(GRDBEventStore.maxSelectors - 1)).map { _ in
-            try! QueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())])
-        } + [try QueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(order)])]
-        let query = Query(items)
+            try! EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())])
+        } + [try EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(order)])]
+        let query = EventQuery(items)
         #expect(query.selectors.count == 500)
 
         #expect(try await store.source(query).map(\.position) == [first])
@@ -109,8 +109,8 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
 
     /// The query plan of `sql(query)`, a statement the store really generates, after filling the log.
     private func plan(
-        _ query: Query,
-        _ sql: (Query) -> (sql: String, arguments: StatementArguments)?
+        _ query: EventQuery,
+        _ sql: (EventQuery) -> (sql: String, arguments: StatementArguments)?
     ) throws -> [String] {
         let queue = try DatabaseQueue()
         _ = try GRDBEventStore(queue)
@@ -133,7 +133,7 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
 
     /// Every statement the store runs to find events: the positions, the events, the last position.
     private func statements(after: Position = 0, upTo: Position? = nil, limit: Int? = nil)
-        -> [(name: String, sql: (Query) -> (sql: String, arguments: StatementArguments)?)]
+        -> [(name: String, sql: (EventQuery) -> (sql: String, arguments: StatementArguments)?)]
     {
         [
             ("positions", { GRDBEventStore.positionsSQL(for: $0, after: after, upTo: upTo, limit: limit) }),
@@ -147,7 +147,7 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
     }
 
     @Test func taggedSelectorsAreDrivenByTheTagIndex() throws {
-        let query = try Query.of(OrderPlaced.self, where: [.payload("orderId"): .bound(UUID())])
+        let query = try EventQuery.of(OrderPlaced.self, where: [.payload("orderId"): .bound(UUID())])
         for variant in [statements(), statements(after: 10, upTo: 1000, limit: 500)] {
             for (name, sql) in variant {
                 let plan = try plan(query, sql)
@@ -159,9 +159,9 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
     }
 
     @Test func aSecondSelectorDoesNotDefeatTheTagIndex() throws {
-        let query = Query([
-            try QueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())]),
-            try QueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())]),
+        let query = EventQuery([
+            try EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())]),
+            try EventQueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())]),
         ])
         for (name, sql) in statements(limit: 1) {
             let plan = try plan(query, sql)
@@ -171,7 +171,7 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
     }
 
     @Test func untaggedSelectorsUseTheTypeIndex() throws {
-        let query = try Query.of(OrderPlaced.self)
+        let query = try EventQuery.of(OrderPlaced.self)
         for (name, sql) in statements(after: 5) {
             let plan = try plan(query, sql)
             #expect(plan.contains { $0.contains("ledjer_event_type") }, "\(name): \(plan)")
