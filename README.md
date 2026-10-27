@@ -76,8 +76,10 @@ or equal events can compare unequal.
 - **Typed, not dynamic.** Events are `Codable` structs and their type is their schema, so there is no
   malli. Tags are declared with key paths (`EventTag("id", \.id)`). Queries are validated when
   constructed (`try EventQuery.of(...)`), so stores never see an invalid one.
-- **Tag values are typed**: `String`, `Int`, `Bool`, `UUID`, compared by type and value. The `"*"`
-  wildcard string is `.any`.
+- **Tag values are typed**: `String`, `Int`, `Bool`, `UUID`, compared by type and value (so are the
+  fixed-width integers that always fit an `Int`: `Int8`/`16`/`32`/`64` and `UInt8`/`16`/`32`, which become
+  the same `.int` as an `Int` of that value). `UInt`, `UInt64`, `Double`, `Date` and the like aren't tag
+  values: convert them yourself, deliberately. The `"*"` wildcard string is `.any`.
 - **Strings match by their UTF-8 bytes**, as in Clojure and the GRDB store, not by Unicode canonical
   equivalence as Swift's `String ==` does: tag values, tag names and event types written as the precomposed
   "café" and as "cafe\u{301}" are different. (`Metadata` keys are the exception: a plain dictionary,

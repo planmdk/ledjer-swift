@@ -102,6 +102,16 @@ public protocol ScalarConvertible: Sendable {
 
 extension String: ScalarConvertible { public var scalar: Scalar { .string(self) } }
 extension Int: ScalarConvertible { public var scalar: Scalar { .int(self) } }
+// The integer types that always fit an `Int` on the platforms of this package (64-bit), and so become the
+// same `.int` as the `Int` of that value. `UInt` and `UInt64` don't fit, so they aren't tag values:
+// convert them yourself, deliberately.
+extension Int8: ScalarConvertible { public var scalar: Scalar { .int(Int(self)) } }
+extension Int16: ScalarConvertible { public var scalar: Scalar { .int(Int(self)) } }
+extension Int32: ScalarConvertible { public var scalar: Scalar { .int(Int(self)) } }
+extension Int64: ScalarConvertible { public var scalar: Scalar { .int(Int(self)) } }
+extension UInt8: ScalarConvertible { public var scalar: Scalar { .int(Int(self)) } }
+extension UInt16: ScalarConvertible { public var scalar: Scalar { .int(Int(self)) } }
+extension UInt32: ScalarConvertible { public var scalar: Scalar { .int(Int(self)) } }
 extension Bool: ScalarConvertible { public var scalar: Scalar { .bool(self) } }
 extension UUID: ScalarConvertible { public var scalar: Scalar { .uuid(self) } }
 extension Scalar: ScalarConvertible { public var scalar: Scalar { self } }

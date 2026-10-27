@@ -39,6 +39,34 @@ struct TestEvent2: Event {
         }
     }
 
+    struct Sized: Event {
+        static let eventType: EventType = "event-test/sized"
+        static var tags: [EventTag<Self>] { [EventTag("small", \.small), EventTag("big", \.big), EventTag("count", \.count)] }
+        var small: Int8
+        var big: Int64
+        var count: UInt32?
+    }
+
+    @Test func fixedWidthIntegersFittingAnIntAreTagValues() throws {
+        #expect(Int8(-8).scalar == .int(-8))
+        #expect(Int16(16).scalar == .int(16))
+        #expect(Int32.min.scalar == .int(Int(Int32.min)))
+        #expect(Int64.max.scalar == .int(Int.max))
+        #expect(UInt8.max.scalar == .int(255))
+        #expect(UInt16.max.scalar == .int(65535))
+        #expect(UInt32.max.scalar == .int(4_294_967_295))
+
+        let event = try NewEvent(Sized(small: -3, big: 1 << 40, count: UInt32.max))
+        #expect(event.tags[.payload("small")] == .int(-3))
+        #expect(event.tags[.payload("big")] == .int(1 << 40))
+        #expect(event.tags[.payload("count")] == .int(4_294_967_295))
+        #expect(try NewEvent(Sized(small: 0, big: 0, count: nil)).tags[.payload("count")] == nil)
+
+        // Bound like an Int of the same value.
+        let query = try EventQuery.of(Sized.self, where: [.payload("big"): .bound(Int64(1) << 40), .payload("small"): .bound(Int(-3))])
+        #expect(query.matches(type: Sized.eventType, tags: event.tags))
+    }
+
     @Test func decodeChecksTheType() throws {
         let stored = StoredEvent(position: 1, type: "test/event-2", metadata: [:], payload: Data(#"{"id":"a","num":1}"#.utf8))
         #expect(try stored.decode(TestEvent2.self).num == 1)
