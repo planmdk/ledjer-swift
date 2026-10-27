@@ -117,10 +117,10 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
         try queue.write { db in
             for i in 0..<2000 {
                 try db.execute(sql: "INSERT INTO ledjer_event (type, metadata, payload) VALUES (?, '{}', '{}')",
-                               arguments: [i % 2 == 0 ? "contract/order-placed" : "contract/order-noted"])
+                               arguments: [LedjerSchema.blob(i % 2 == 0 ? "contract/order-placed" : "contract/order-noted")])
                 if i % 2 == 0 {
-                    try db.execute(sql: "INSERT INTO ledjer_event_tag (position, name, value) VALUES (?, 'payload.orderId', ?)",
-                                   arguments: [i + 1, "uuid:\(UUID().uuidString)"])
+                    try db.execute(sql: "INSERT INTO ledjer_event_tag (position, name, value) VALUES (?, ?, ?)",
+                                   arguments: [i + 1, LedjerSchema.blob("payload.orderId"), LedjerSchema.blob("uuid:\(UUID().uuidString)")])
                 }
             }
             try db.execute(sql: "ANALYZE")

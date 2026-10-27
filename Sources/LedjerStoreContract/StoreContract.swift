@@ -27,6 +27,7 @@ public enum StoreContract {
         try await sourceSelectsByTagsOfTheEventsType(makeStore)
         try await metadataRoundTrips(makeStore)
         try await intAndBoolTags(makeStore)
+        try await nulCharactersAreSignificant(makeStore)
         try await appendConditions(makeStore)
         try await failedConditionalAppendsAreNotDelivered(makeStore)
         try await concurrentConditionalAppendsAreAtomic(makeStore)
@@ -185,6 +186,85 @@ public enum StoreContract {
             condition: AppendCondition(query: try Query.of(Flagged.self, where: [n: .bound(2), active: .bound(false)]))
         )
         try check(passed == 7, "a condition on Int and Bool tags passes when none matches: \(String(describing: passed))")
+    }
+
+    /// A NUL character is an ordinary character: `"alice\0evil"` is neither `"alice"` nor `"alice\0"`, in tag
+    /// values, tag names and event types. (A store that hands strings to a C API as NUL-terminated text, as
+    /// SQLite's `bind_text` with length -1 does, cuts them at the NUL and fails this.)
+    public static func nulCharactersAreSignificant(_ makeStore: StoreFactory) async throws {
+        let nul = "\u{0}"
+        let name = TagPath.payload("name")
+
+        // Tag values.
+        let store = try await makeStore()
+        try await store.append([NulTagged(name: "alice" + nul + "evil")])  // 1
+        func positions(_ value: String) async throws -> [Position] {
+            try await store.source(Query.of(NulTagged.self, where: [name: .bound(value)])).map(\.position)
+        }
+        func fails(_ value: String) async throws -> Bool {
+            do {
+                try await store.append(
+                    [NulTagged(name: "unrelated")],
+                    condition: AppendCondition(query: try Query.of(NulTagged.self, where: [name: .bound(value)])))
+                return false
+            } catch LedjerError.appendConditionFailed {
+                return true
+            }
+        }
+        let prefix = try await positions("alice")
+        try check(prefix.isEmpty, "\"alice\" doesn't match \"alice\\0evil\": \(prefix)")
+        let whole = try await positions("alice" + nul + "evil")
+        try check(whole == [1], "\"alice\\0evil\" matches itself: \(whole)")
+        let prefixFails = try await fails("alice")
+        try check(!prefixFails, "a condition on \"alice\" passes when only \"alice\\0evil\" exists")
+        let wholeFails = try await fails("alice" + nul + "evil")
+        try check(wholeFails, "a condition on \"alice\\0evil\" fails")
+        // 2 is the unrelated event appended by the passing condition above, 3 the next one.
+        try await store.append([NulTagged(name: "alice"), NulTagged(name: "alice" + nul), NulTagged(name: "")])  // 3, 4, 5
+        let alice = try await positions("alice")
+        try check(alice == [3], "\"alice\" and \"alice\\0evil\" coexist: \(alice)")
+        let trailing = try await positions("alice" + nul)
+        try check(trailing == [4], "a trailing NUL counts: \(trailing)")
+        let empty = try await positions("")
+        try check(empty == [5], "the empty string is a value: \(empty)")
+        let other = try await positions("alice" + nul + "other")
+        try check(other.isEmpty, "a different suffix after the NUL: \(other)")
+        let both = try await store.source(
+            Query([
+                try QueryItem([NulTagged.self], where: [name: .bound("alice")]),
+                try QueryItem([NulTagged.self], where: [name: .bound("alice" + nul + "evil")]),
+            ])
+        ).map(\.position)
+        try check(both == [1, 3], "a query for both: \(both)")
+        let last = try await store.lastPosition(
+            matching: Query.of(NulTagged.self, where: [name: .bound("alice")]), through: 5)
+        try check(last == 3, "lastPosition: \(String(describing: last))")
+        let decoded = try await store.source(Query.of(NulTagged.self, where: [name: .bound("alice" + nul + "evil")]))
+            .map { try $0.decode(NulTagged.self).name }
+        try check(decoded == ["alice" + nul + "evil"], "the payload keeps the NUL")
+
+        // Tag names: two tags of one event whose names differ only after a NUL.
+        let keys = try await makeStore()
+        try await keys.append([NulKeys(plain: "1", other: "2")])
+        func keyed(_ key: String, _ value: String) async throws -> [Position] {
+            try await keys.source(Query.of(NulKeys.self, where: [.payload(key): .bound(value)])).map(\.position)
+        }
+        let plainTag = try await keyed("k", "1")
+        try check(plainTag == [1], "tag \"k\": \(plainTag)")
+        let nulTag = try await keyed("k" + nul + "x", "2")
+        try check(nulTag == [1], "tag \"k\\0x\": \(nulTag)")
+        let mixedUp = try await keyed("k", "2") + keyed("k" + nul + "x", "1")
+        try check(mixedUp.isEmpty, "the two tags don't mix: \(mixedUp)")
+
+        // Event types that differ only after a NUL.
+        let types = try await makeStore()
+        try await types.append([NulTypeShort(), NulTypeLong(), NulTypeShort()])
+        let short = try await types.source(Query.of(NulTypeShort.self)).map(\.position)
+        try check(short == [1, 3], "event type \"contract/nul\": \(short)")
+        let long = try await types.source(Query.of(NulTypeLong.self)).map(\.position)
+        try check(long == [2], "event type \"contract/nul\\0long\": \(long)")
+        let longEvents = try await types.source(Query.of(NulTypeLong.self))
+        try check(longEvents.map(\.type) == [NulTypeLong.eventType], "the stored type keeps the NUL")
     }
 
     /// A conditional append that fails is never seen by subscribers: they get the events of the
@@ -558,6 +638,34 @@ extension StoreContract {
         public var n: Int
         public var active: Bool
         public init(n: Int, active: Bool) { (self.n, self.active) = (n, active) }
+    }
+
+    /// A string tag, for values with characters that strings are easily mishandled by.
+    public struct NulTagged: Event {
+        public static let eventType: EventType = "contract/nul-tagged"
+        public static var tags: [EventTag<Self>] { [EventTag("name", \.name)] }
+        public var name: String
+        public init(name: String) { self.name = name }
+    }
+
+    /// Two tags whose names differ only after a NUL.
+    public struct NulKeys: Event {
+        public static let eventType: EventType = "contract/nul-keys"
+        public static var tags: [EventTag<Self>] { [EventTag("k", \.plain), EventTag("k\u{0}x", \.other)] }
+        public var plain: String
+        public var other: String
+        public init(plain: String, other: String) { (self.plain, self.other) = (plain, other) }
+    }
+
+    public struct NulTypeShort: Event {
+        public static let eventType: EventType = "contract/nul"
+        public init() {}
+    }
+
+    /// Its type differs from `NulTypeShort`'s only after a NUL.
+    public struct NulTypeLong: Event {
+        public static let eventType: EventType = "contract/nul\u{0}long"
+        public init() {}
     }
 
     public struct VersionTagged: Event {

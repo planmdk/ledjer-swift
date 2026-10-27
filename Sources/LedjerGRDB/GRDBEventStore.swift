@@ -86,13 +86,13 @@ public final class GRDBEventStore: EventStore {
             for event in events {
                 try db.execute(
                     sql: "INSERT INTO ledjer_event (type, metadata, payload) VALUES (?, ?, ?)",
-                    arguments: [event.type.rawValue, try JSONCoding.encode(event.metadata), event.payload]
+                    arguments: [LedjerSchema.blob(event.type.rawValue), try JSONCoding.encode(event.metadata), event.payload]
                 )
                 let position = Int(db.lastInsertedRowID)
                 for (path, value) in event.tags {
                     try db.execute(
                         sql: "INSERT INTO ledjer_event_tag (position, name, value) VALUES (?, ?, ?)",
-                        arguments: [position, path.description, value.encoded]
+                        arguments: [position, LedjerSchema.blob(path.description), LedjerSchema.blob(value.encoded)]
                     )
                 }
                 last = position
@@ -209,7 +209,7 @@ public final class GRDBEventStore: EventStore {
         return try Row.fetchAll(db, sql: sql, arguments: arguments).map { row in
             StoredEvent(
                 position: row["position"],
-                type: EventType(row["type"] as String),
+                type: EventType(LedjerSchema.string(row["type"] as Data)),
                 metadata: try JSONCoding.decode(Metadata.self, from: row["metadata"]),
                 payload: row["payload"]
             )
@@ -278,19 +278,19 @@ public final class GRDBEventStore: EventStore {
             var sql: String
             if let (path, value) = tags.first {
                 sql = "SELECT t0.position AS position FROM ledjer_event_tag t0 WHERE t0.name = ? AND t0.value = ?"
-                arguments += [path.description, value.encoded]
+                arguments += [LedjerSchema.blob(path.description), LedjerSchema.blob(value.encoded)]
                 sql += bounds("t0.position")
                 sql += " AND EXISTS (SELECT 1 FROM ledjer_event e WHERE e.position = t0.position AND e.type = ?)"
-                arguments += [selector.type.rawValue]
+                arguments += [LedjerSchema.blob(selector.type.rawValue)]
                 for (index, (path, value)) in tags.dropFirst().enumerated() {
                     let t = "t\(index + 1)"
                     sql += " AND EXISTS (SELECT 1 FROM ledjer_event_tag \(t) WHERE \(t).position = t0.position AND \(t).name = ? AND \(t).value = ?)"
-                    arguments += [path.description, value.encoded]
+                    arguments += [LedjerSchema.blob(path.description), LedjerSchema.blob(value.encoded)]
                 }
                 sql += " ORDER BY t0.position\(direction)"
             } else {
                 sql = "SELECT e.position AS position FROM ledjer_event e WHERE e.type = ?"
-                arguments += [selector.type.rawValue]
+                arguments += [LedjerSchema.blob(selector.type.rawValue)]
                 sql += bounds("e.position")
                 sql += " ORDER BY e.position\(direction)"
             }

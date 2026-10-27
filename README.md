@@ -178,6 +178,11 @@ or equal events can compare unequal.
   `DatabaseMigrator`, register them there too with `GRDBEventStore.registerMigrations(in:)`, which is
   required with `eraseDatabaseOnSchemaChange`, or GRDB would see the tables as unknown schema and erase them.
   `GRDBEventStore.open(_:)` and `GRDBAccumulator.open(name:writer:)` do this off the calling thread.
+- Event types, tag names and values, and checkpoint names are stored and bound as their UTF-8 bytes (`BLOB`
+  columns, not `TEXT`): GRDB binds a `String` as C text that ends at the first NUL character, so a tag
+  value `"alice\0evil"` would have been stored, and matched, as `"alice"`. Strings compare exactly, NUL
+  characters included, as in the Clojure library and the in-memory store. Query the tables by hand with
+  `X'…'` or `CAST(… AS BLOB)` literals, or bound `Data`.
 - The log is append-only: triggers abort `UPDATE` and `DELETE` on `ledjer_event` and `ledjer_event_tag`.
 - An append and its condition check run in one write transaction.
 - Queries are driven by the tag index: each selector is a range scan over `(name, value, position)` (or

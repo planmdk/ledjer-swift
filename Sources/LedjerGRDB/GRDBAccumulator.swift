@@ -52,7 +52,7 @@ public final class GRDBAccumulator: PersistedAccumulator {
 
     public var sequenceNumber: Position? {
         get async throws {
-            let name = self.name
+            let name = LedjerSchema.blob(self.name)
             return try await writer.read { db in
                 try Int.fetchOne(db, sql: "SELECT position FROM ledjer_checkpoint WHERE name = ?", arguments: [name])
             }
@@ -71,7 +71,7 @@ public final class GRDBAccumulator: PersistedAccumulator {
     }
 
     private func write(_ operations: [GRDBOperation], expecting fence: Position??, through position: Position) async throws {
-        let name = self.name
+        let name = LedjerSchema.blob(self.name)
         try await writer.write { db in
             if let expected = fence {
                 let stored = try Int.fetchOne(db, sql: "SELECT position FROM ledjer_checkpoint WHERE name = ?", arguments: [name])
@@ -90,6 +90,6 @@ public final class GRDBAccumulator: PersistedAccumulator {
 
     /// Forgets how far the view has got, so a new view with this name starts from the beginning.
     public static func clearCheckpoint(named name: String, in db: Database) throws {
-        try db.execute(sql: "DELETE FROM ledjer_checkpoint WHERE name = ?", arguments: [name])
+        try db.execute(sql: "DELETE FROM ledjer_checkpoint WHERE name = ?", arguments: [LedjerSchema.blob(name)])
     }
 }
