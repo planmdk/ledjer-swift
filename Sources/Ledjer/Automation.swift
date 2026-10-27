@@ -92,7 +92,12 @@ public final class Automation: @unchecked Sendable {
     /// Whether the automation still listens for triggers.
     public var isRunning: Bool { lock.withLock { running } }
 
-    /// Stops listening for triggers. A run of the body in progress is cancelled.
+    /// Stops listening for triggers, and cancels the run of the body in progress. No further body starts.
+    ///
+    /// Returns without waiting for that run, as `stop` of the Clojure library does (which doesn't interrupt it
+    /// at all): a body that ignores cancellation can still be running afterwards. Bodies should honour
+    /// cancellation and be idempotent, since runs of different automations (e.g. a new one started right
+    /// after this stop) can overlap.
     public func stop() {
         let toCancel = lock.withLock {
             running = false
@@ -111,7 +116,7 @@ public final class Automation: @unchecked Sendable {
 /// Starts an automation: whenever a trigger fires, `body` runs with the event store.
 ///
 /// The body typically reads state views and appends events. Runs of the
-/// body never overlap. Each event of an event trigger is a run. Periodic and
+/// body never overlap (within this automation). Each event of an event trigger is a run. Periodic and
 /// signal triggers coalesce: ticks that arrive while the body is busy (or while
 /// a run is already waiting) make one more run, not one each. Subscriptions are in place when this returns, so
 /// events appended afterwards trigger the automation.

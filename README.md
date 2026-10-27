@@ -99,6 +99,10 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
   Periodic and signal ticks coalesce while the body is busy (one more run, not one each), similar to
   Clojure's buffer-1 channel; each event of an event trigger is a run. `automation` returns a handle that
   stops the automation on `stop()` or when dropped.
+  `stop()` doesn't wait for a body in flight, as in Clojure (where the body isn't interrupted at all;
+  Swift also cancels it, cooperatively). A body that ignores cancellation can therefore still be running
+  after `stop()` returns, so bodies should honour cancellation and be idempotent. "Runs never overlap"
+  holds within one handle only: an automation started right after the stop of another can overlap its last run.
   A `Trigger` is a description that each automation starts itself, so it can be shared;
   `Trigger.signal` takes a stream factory instead of a core.async channel.
 - **Persisted views** keep Clojure's `close()` semantics: stop has priority over queued events, so
@@ -170,6 +174,10 @@ Stop the views and automations when the app goes to the background and start new
 active again. That is cheap and exact: a new view resumes after the accumulator's checkpoint, and
 events appended meanwhile are picked up. Use `beginBackgroundTask` around the `close()` if it needs
 time to flush.
+
+Closing a view waits for its worker, but `Automation.stop()` doesn't wait for a body in flight (as in
+Clojure): a body that ignores cancellation can still be running when the new automation starts, so
+bodies should honour cancellation or be idempotent.
 
 Starting must wait for the previous stop to finish. Otherwise a quick background → active starts
 the new view while the old one is still flushing, and the two commit against the same checkpoint: one of
