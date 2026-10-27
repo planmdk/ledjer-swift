@@ -62,6 +62,51 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
         #expect(tags == 1)  // the one event's orderId; it has no customer
     }
 
+    /// A query of `count` selectors: one item of the same type per order, so each is a branch of the union.
+    private func query(selectors count: Int) -> Query {
+        Query((0..<count).map { _ in try! QueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())]) })
+    }
+
+    @Test func aQueryOfTheMaximumNumberOfSelectorsWorks() async throws {
+        let store = try GRDBEventStore(DatabaseQueue())
+        let order = UUID()
+        let first = try await store.append([OrderPlaced(orderId: order)])!
+        let items = (0..<(GRDBEventStore.maxSelectors - 1)).map { _ in
+            try! QueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(UUID())])
+        } + [try QueryItem([OrderPlaced.self], where: [.payload("orderId"): .bound(order)])]
+        let query = Query(items)
+        #expect(query.selectors.count == 500)
+
+        #expect(try await store.source(query).map(\.position) == [first])
+        #expect(try await store.lastPosition(matching: query, through: first) == first)
+        await #expect(throws: LedjerError.self) {
+            try await store.append([OrderPlaced(orderId: UUID())], condition: AppendCondition(query: query))
+        }
+        var events = try await store.subscribe(query, startPosition: 1).makeAsyncIterator()
+        #expect(try await events.next()?.position == first)
+    }
+
+    @Test func moreSelectorsThanSQLiteCanCombineAreRefusedClearly() async throws {
+        let queue = try DatabaseQueue()
+        let store = try GRDBEventStore(queue)
+        try await store.append([OrderPlaced(orderId: UUID())])
+        let query = query(selectors: GRDBEventStore.maxSelectors + 1)
+        #expect(query.selectors.count == 501)
+
+        func refused(_ operation: () async throws -> Void) async -> Bool {
+            do { try await operation() } catch LedjerError.invalidQuery(let why) {
+                return why.contains("at most 500 query selectors")
+            } catch { return false }
+            return false
+        }
+        #expect(await refused { _ = try await store.source(query) })
+        #expect(await refused { _ = try await store.lastPosition(matching: query, through: 1) })
+        #expect(await refused { _ = try await store.subscribe(query) })
+        #expect(await refused { try await store.append([OrderPlaced(orderId: UUID())], condition: AppendCondition(query: query)) })
+        let count = try await queue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM ledjer_event")! }
+        #expect(count == 1)  // the refused append wrote nothing
+    }
+
     /// The query plan of `sql(query)`, a statement the store really generates, after filling the log.
     private func plan(
         _ query: Query,

@@ -20,6 +20,21 @@ public final class GRDBEventStore: EventStore {
     /// How many events a subscription fetches at a time.
     private static let batchSize = 500
 
+    /// The most selectors (event types, per tag bindings that apply to them) a query can have.
+    /// Each selector is one branch of a `UNION`, and SQLite's default limit for the terms of a
+    /// compound `SELECT` is 500.
+    static let maxSelectors = 500
+
+    /// Throws `LedjerError.invalidQuery` for a query with more selectors than SQLite can combine,
+    /// instead of letting SQLite fail with "too many terms in compound SELECT".
+    static func checkSelectorCount(_ query: Query) throws {
+        guard query.selectors.count <= maxSelectors else {
+            throw LedjerError.invalidQuery(
+                "the GRDB store supports at most \(maxSelectors) query selectors per query, "
+                    + "but this one has \(query.selectors.count)")
+        }
+    }
+
     /// Creates the store, migrating the database if needed.
     ///
     /// Apps that run their own `DatabaseMigrator` should call
@@ -48,6 +63,7 @@ public final class GRDBEventStore: EventStore {
     // MARK: EventStore
 
     public func source(_ query: Query, startPosition: Position?) async throws -> [StoredEvent] {
+        try Self.checkSelectorCount(query)
         let after = max((startPosition ?? 0) - 1, 0)
         return try await writer.read { db in
             try Self.fetch(db, query, after: after, upTo: nil, limit: nil)
@@ -56,7 +72,8 @@ public final class GRDBEventStore: EventStore {
 
     @discardableResult
     public func append(_ events: [NewEvent], condition: AppendCondition?) async throws -> Position? {
-        try await writer.write { db in
+        if let condition { try Self.checkSelectorCount(condition.query) }
+        return try await writer.write { db in
             if let condition,
                 let (positions, arguments) = Self.positionsSQL(
                     for: condition.query, after: condition.after ?? 0, upTo: nil, limit: 1)
@@ -85,7 +102,8 @@ public final class GRDBEventStore: EventStore {
     }
 
     public func lastPosition(matching query: Query, through position: Position) async throws -> Position? {
-        try await writer.read { db in
+        try Self.checkSelectorCount(query)
+        return try await writer.read { db in
             guard let (sql, arguments) = Self.lastPositionSQL(for: query, through: position) else { return nil }
             return try Int.fetchOne(db, sql: sql, arguments: arguments)
         }
@@ -95,6 +113,7 @@ public final class GRDBEventStore: EventStore {
         _ query: Query,
         startPosition: Position?
     ) async throws -> AsyncThrowingStream<StoredEvent, any Error> {
+        try Self.checkSelectorCount(query)
         // Fixing the starting point before returning means that no event
         // appended after this call returns can be missed.
         let initiallyDelivered: Position

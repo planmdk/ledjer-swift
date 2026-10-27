@@ -132,6 +132,9 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
   A view whose handle is dropped shuts itself down. After
   `close()`, `awaitPosition` and `accumulator()` throw `PersistedViewError.closed`; a failure of the
   final commit doesn't throw from `close()`, see `handle.failure` and `options.onError`.
+- **The GRDB store limits a query to 500 selectors** (see below); the in-memory store, like the Clojure
+  one, has no such limit, and the store contract doesn't check it. A query that is fine in memory can
+  throw `LedjerError.invalidQuery` against GRDB.
 - **Subscriptions** are `AsyncThrowingStream`s. Ending the iteration cancels them. The GRDB store reads
   the log as the consumer pulls (batches of 500), and a persisted view feeds its worker through a
   bounded queue, so a slow commit slows the reads down. The in-memory store pushes: it keeps every
@@ -163,6 +166,11 @@ try await gwt(given: [Deposited(account: "a", amount: 5)],
   of its path (e.g. `payload.customer` before `payload.orderId`) and the others are looked up per
   candidate, so the cost follows the number of events with *that* tag value, which can exceed the number of
   events matching all of them. The tests check the query plans of the SQL the store really generates.
+- A query can have at most 500 selectors (one per event type of each query item, with the tag bindings
+  that apply to it; identical ones count once). Each selector is one branch of a `UNION`, and SQLite's
+  default limit for the terms of a compound `SELECT` is 500. Reads, subscriptions and the condition of
+  an append throw `LedjerError.invalidQuery` beyond that, before running any SQL, so an append with
+  such a condition writes nothing. Split a larger query, or use a coarser one and filter.
 - `GRDBAccumulator` commits a batch of read-model writes and its checkpoint in one transaction.
   To rebuild a read model, empty its tables and call `GRDBAccumulator.clearCheckpoint(named:in:)` in a migration.
 - Subscriptions use `ValueObservation`, which sees writes made through the same `DatabaseWriter`
