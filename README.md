@@ -19,7 +19,7 @@ Requires Swift 6.1, iOS 16 / macOS 13.
 | event            | `defevent`             | `struct: Event`                               |
 | state view       | `defview`              | `StateView`                                   |
 | persisted view   | `defpersistedview`     | `PersistedStateView` → `PersistedViewHandle`  |
-| automation       | `automation`           | `automation(on:triggers:body:)`               |
+| automation       | `automation`           | `automation(on:triggers:onError:body:)`       |
 | state change     | fn that appends        | any `async` function that appends             |
 | GWT / GT         | `gwt` / `gt`           | `gwt(given:when:then:)` / `gt(...)`           |
 
