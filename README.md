@@ -195,8 +195,12 @@ the new view while the old one is still flushing, and the two commit against the
 them is fenced off with a `PersistedAccumulatorConflict`, and if it is the new one, it fails.
 
 An actor is re-entrant (every `await` lets another call in), so the flag is set synchronously and the
-work is done by tasks: `running` is written only by the single start task in flight and read only by a
-stop task after that start has ended and the previous stop has finished, so they never overlap.
+work is done by tasks. `start()` and `stop()` capture the tasks they wait for when they are called, not
+when their task first runs, so a task only ever waits for tasks created before it and none can wait for
+itself or for each other (a `stop()` right after `start()` in the same turn would otherwise deadlock).
+`running` is written only by the single start task in flight, after the previous stop has finished,
+and read only by a stop task after that start has ended and the previous stop has finished, so they
+never overlap.
 
 ```swift
 @MainActor final class Views {
@@ -208,8 +212,9 @@ stop task after that start has ended and the previous stop has finished, so they
     func start() {
         guard !wanted else { return }
         wanted = true
+        let previous = stopping  // captured now: by the time the task runs, `stopping` may be a later stop
         starting = Task {
-            do { try await open() } catch {
+            do { try await open(after: previous) } catch {
                 if !Task.isCancelled { wanted = false; failed(error) }  // else a stop() cancelled us
             }
         }
@@ -230,8 +235,8 @@ stop task after that start has ended and the previous stop has finished, so they
         }
     }
 
-    private func open() async throws {
-        await stopping?.value  // the previous views are closed before new ones start
+    private func open(after previous: Task<Void, Never>?) async throws {
+        await previous?.value  // the previous views are closed before new ones start
         try Task.checkCancellation()
         let accumulator = try await GRDBAccumulator.open(name: "balances", writer: pool)
         var options = PersistedViewOptions()
