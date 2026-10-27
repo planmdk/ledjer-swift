@@ -175,49 +175,72 @@ Starting must wait for the previous stop to finish. Otherwise a quick background
 the new view while the old one is still flushing, and the two commit against the same checkpoint: one of
 them is fenced off with a `PersistedAccumulatorConflict`, and if it is the new one, it fails.
 
+An actor is re-entrant (every `await` lets another call in), so the flag is set synchronously and the
+work is done by tasks: `running` is written only by the single start task in flight and read only by a
+stop task after that start has ended and the previous stop has finished, so they never overlap.
+
 ```swift
 @MainActor final class Views {
-    private var balances: PersistedViewHandle<GRDBAccumulator>?
-    private var reminders: Automation?
+    private var wanted = false
+    private var running: (balances: PersistedViewHandle<GRDBAccumulator>, reminders: Automation)?
+    private var starting: Task<Void, Never>?
     private var stopping: Task<Void, Never>?
 
-    func start() async throws {
-        await stopping?.value  // the previous views are closed before new ones start
-        guard balances == nil else { return }
-        let accumulator = try await GRDBAccumulator.open(name: "balances", writer: pool)
-        var options = PersistedViewOptions()
-        options.onError = { [weak self] error in Task { @MainActor in self?.failed(error) } }
-        balances = try await readModel.start(on: store, accumulator: accumulator, options: options)
-        reminders = try await automation(
-            on: store, triggers: [.event(ReminderDue.self)],
-            onError: { [weak self] error in Task { @MainActor in self?.failed(error) } }
-        ) { store in /* ... */ }
+    func start() {
+        guard !wanted else { return }
+        wanted = true
+        starting = Task {
+            do { try await open() } catch {
+                if !Task.isCancelled { wanted = false; failed(error) }  // else a stop() cancelled us
+            }
+        }
     }
 
     func stop() {
-        let view = balances, automation = reminders
-        balances = nil
-        reminders = nil
+        wanted = false
+        let start = starting
+        start?.cancel()
         let previous = stopping
         stopping = Task {
+            await start?.value  // an unfinished start ends first, leaving what it opened in `running`
             await previous?.value
-            automation?.stop()
-            await view?.close()
+            guard let current = running else { return }
+            running = nil
+            current.reminders.stop()
+            await current.balances.close()
+        }
+    }
+
+    private func open() async throws {
+        await stopping?.value  // the previous views are closed before new ones start
+        try Task.checkCancellation()
+        let accumulator = try await GRDBAccumulator.open(name: "balances", writer: pool)
+        var options = PersistedViewOptions()
+        options.onError = { [weak self] error in Task { @MainActor in self?.failed(error) } }
+        let balances = try await readModel.start(on: store, accumulator: accumulator, options: options)
+        do {
+            try Task.checkCancellation()
+            let reminders = try await automation(
+                on: store, triggers: [.event(ReminderDue.self)],
+                onError: { [weak self] error in Task { @MainActor in self?.failed(error) } }
+            ) { store in /* ... */ }
+            running = (balances, reminders)
+        } catch {
+            await balances.close()
+            throw error
         }
     }
 
     /// A view or automation that failed anyway: restart them when the app is active.
-    private func failed(_ error: any Error) { /* log it, then `stop()` and `try await start()` */ }
+    private func failed(_ error: any Error) { /* log it, then `stop()` and `start()` */ }
 }
 
-// In the App:
+// In the App. The closure runs on the main actor, so the calls happen in the order of the phases.
 .onChange(of: scenePhase) { phase in  // iOS 17+: { _, phase in
-    Task {
-        switch phase {
-        case .background: views.stop()
-        case .active: try await views.start()
-        default: break
-        }
+    switch phase {
+    case .background: views.stop()
+    case .active: views.start()
+    default: break
     }
 }
 ```
