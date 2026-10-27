@@ -593,6 +593,48 @@ struct CountingSubscriptions: EventStore {
     }
 }
 
+/// Fails its first commits, noting when each attempt was made.
+actor StampingAccumulator: PersistedAccumulator {
+    typealias Operation = Add
+    private var failuresLeft: Int
+    private var sequence: Position?
+    private(set) var attempts: [ContinuousClock.Instant] = []
+
+    init(failingCommits: Int) { failuresLeft = failingCommits }
+
+    var sequenceNumber: Position? { sequence }
+
+    func commit(_ operations: [Add], through position: Position) throws {
+        attempts.append(.now)
+        if failuresLeft > 0 {
+            failuresLeft -= 1
+            throw CommitFailed()
+        }
+        sequence = position
+    }
+}
+
+@Suite struct PersistedViewBackoffTests {
+    /// A sleep never ends early, so the lower bounds are safe however loaded the machine is.
+    @Test func theBackoffDoublesWithEachRetry() async throws {
+        let store = InMemoryEventStore()
+        let acc = StampingAccumulator(failingCommits: 3)
+        var options = fastOptions()
+        options.commitRetries = 3
+        options.commitBackoff = .milliseconds(40)
+        let view = try await totalsView.start(on: store, accumulator: acc, options: options)
+        let position = try await store.append([Counted(id: "a", num: 1)])
+        try await view.awaitPosition(position)
+        let attempts = await acc.attempts
+        #expect(attempts.count == 4)
+        let gaps = zip(attempts, attempts.dropFirst()).map { $1 - $0 }
+        for (gap, minimum) in zip(gaps, [Duration.milliseconds(40), .milliseconds(80), .milliseconds(160)]) {
+            #expect(gap >= minimum, "gaps between the attempts: \(gaps)")
+        }
+        await view.close()
+    }
+}
+
 @Suite struct PersistedViewSubscriptionTests {
     /// Nothing is appended after the failure or the close, so only cancelling the pump can end the
     /// subscription: a pump that waits for an event it never gets would not notice a closed inbox.
