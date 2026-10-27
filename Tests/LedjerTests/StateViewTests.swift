@@ -27,6 +27,21 @@ private func expectInvalidQuery(_ body: () async throws -> some Any) async {
     }
 }
 
+/// Two Swift types that, wrongly, share an event type.
+struct SharedNameA: Event {
+    static let eventType: EventType = "view-test/shared-name"
+    static var tags: [EventTag<Self>] { [EventTag("id", \.id)] }
+    var id: String
+    var num: Int
+}
+
+struct SharedNameB: Event {
+    static let eventType: EventType = "view-test/shared-name"
+    static var tags: [EventTag<Self>] { [EventTag("id", \.id)] }
+    var id: String
+    var num: Int
+}
+
 struct MaybeTagged: Event {
     static let eventType: EventType = "view-test/maybe-tagged"
     static var tags: [EventTag<Self>] { [EventTag("id", \.id)] }
@@ -115,6 +130,42 @@ struct MaybeTagged: Event {
         let store = InMemoryEventStore()
         try await store.append([TestEvent(id: "abc-123", num: 10)])
         await #expect(throws: LedjerError.self) { try await view.run(on: store) }
+    }
+
+    @Test func twoSwiftTypesWithOneEventTypeAreRefusedBeforeAnythingIsRead() async throws {
+        let view = StateView(initial: 0, bindings: [
+            .on(SharedNameA.self, where: [.payload("id"): "a"]) { acc, e in acc += e.num },
+            .on(SharedNameB.self, where: [.payload("id"): "b"]) { acc, e in acc -= e.num },
+        ])
+        // The store is empty and would be fine: the view fails on its bindings, not on an event.
+        do {
+            _ = try await view.run(on: InMemoryEventStore())
+            Issue.record("expected a duplicate event type")
+        } catch LedjerError.duplicateEventType(let type, let swiftTypes) {
+            #expect(type == "view-test/shared-name")
+            #expect(swiftTypes.count == 2 && swiftTypes.allSatisfy { $0.contains("SharedName") })
+        }
+        // The same Swift type bound twice, with different tags, is the normal case.
+        let fine = StateView(initial: 0, bindings: [
+            .on(SharedNameA.self, where: [.payload("id"): "a"]) { acc, e in acc += e.num },
+            .on(SharedNameA.self, where: [.payload("id"): "b"]) { acc, e in acc -= e.num },
+        ])
+        #expect(try await fine.run(on: InMemoryEventStore()) == 0)
+    }
+
+    @Test func aBindingRepeatedWithTheSameTagBindingsIsRefusedBeforeAnythingIsRead() async throws {
+        for repeated: TagBindings in [[:], [.payload("id"): "x"]] {
+            let view = StateView(initial: 0, bindings: [
+                .on(TestEvent.self, where: repeated) { acc, e in acc += e.num },
+                .on(TestEvent.self, where: repeated) { acc, e in acc -= e.num },
+            ])
+            do {
+                _ = try await view.run(on: InMemoryEventStore())  // no events: it used to pass
+                Issue.record("expected a duplicate binding")
+            } catch LedjerError.duplicateBinding(let type) {
+                #expect(type == TestEvent.eventType)
+            }
+        }
     }
 
     @Test func reducersSeeTheStoredEvent() async throws {

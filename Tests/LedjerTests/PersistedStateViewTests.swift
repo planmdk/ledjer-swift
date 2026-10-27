@@ -131,6 +131,30 @@ private func fastOptions(maxSize: Int = 64, maxInterval: Duration = .millisecond
         }
     }
 
+    @Test func bindingsThatCantBeRightFailTheStartAndCloseTheAccumulator() async throws {
+        let sharedName = PersistedStateView<Add>(bindings: [
+            .on(SharedNameA.self) { [Add(id: $0.id, amount: $0.num)] },
+            .on(SharedNameB.self) { [Add(id: $0.id, amount: $0.num)] },
+        ])
+        let repeated = PersistedStateView<Add>(bindings: [
+            .on(Counted.self) { [Add(id: $0.id, amount: $0.num)] },
+            .on(Counted.self) { [Add(id: $0.id, amount: -$0.num)] },
+        ])
+        let acc1 = TotalsAccumulator()
+        do {
+            _ = try await sharedName.start(on: InMemoryEventStore(), accumulator: acc1)
+            Issue.record("expected a duplicate event type")
+        } catch LedjerError.duplicateEventType {}
+        #expect(await acc1.closed)
+
+        let acc2 = TotalsAccumulator()
+        do {
+            _ = try await repeated.start(on: InMemoryEventStore(), accumulator: acc2)
+            Issue.record("expected a duplicate binding")
+        } catch LedjerError.duplicateBinding {}
+        #expect(await acc2.closed)
+    }
+
     @Test func aReducerFailureIsThrown() async throws {
         struct Boom: Error {}
         let failing = PersistedStateView<Add>(bindings: [

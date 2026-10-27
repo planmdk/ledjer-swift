@@ -54,6 +54,13 @@ struct TestEvent2: Event {
         _ = try EventQuery.of(OrderPlaced.self, OrderNoted.self, where: [.payload("orderId"): .bound(UUID())])
     }
 
+    @Test func twoSwiftTypesWithOneEventTypeAreInvalid() throws {
+        #expect(throws: LedjerError.self) { try EventQuery.of(SharedNameA.self, SharedNameB.self) }
+        #expect(throws: LedjerError.self) { try EventQueryItem([SharedNameB.self, OrderPlaced.self, SharedNameA.self]) }
+        // The same type twice is just one type.
+        #expect(try EventQuery.of(SharedNameA.self, SharedNameA.self).selectors.count == 1)
+    }
+
     @Test func unknownTagPathIsInvalid() {
         #expect(throws: LedjerError.self) { try EventQuery.of(OrderNoted.self, where: [.payload("orderId"): "x"]) }
         #expect(throws: LedjerError.self) { try EventQuery.of(OrderPlaced.self, where: [.metadata("version"): 1]) }

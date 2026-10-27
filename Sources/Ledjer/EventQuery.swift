@@ -32,6 +32,27 @@ public struct EventTypeInfo: Hashable, Sendable {
     }
 }
 
+/// Throws `LedjerError.duplicateEventType` if two different Swift types share an event type.
+///
+/// Events are matched, and stored, by their event type's name, so two Swift types with the same name would
+/// select each other's events and decode each other's payloads. The Clojure library has the same
+/// requirement ("event type already registered": it only notes the clash, and the last definition wins).
+/// There is no registry here, since Swift types are named where they are used, so this is checked where
+/// types come together: in a query, and in a view's bindings.
+func checkEventTypesAreUnique(_ declared: [(type: EventType, swift: any Event.Type)]) throws {
+    var first: [EventType: any Event.Type] = [:]
+    for (type, swift) in declared {
+        guard let other = first[type] else {
+            first[type] = swift
+            continue
+        }
+        if ObjectIdentifier(other) != ObjectIdentifier(swift) {
+            throw LedjerError.duplicateEventType(
+                type, swiftTypes: [String(reflecting: other), String(reflecting: swift)].sorted())
+        }
+    }
+}
+
 /// Event types plus tag bindings, all of which must match.
 ///
 /// An event matches when its type is one of the event types and, for each
@@ -44,7 +65,9 @@ public struct EventQueryItem: Hashable, Sendable {
 
     /// Throws `LedjerError.invalidQuery` if a binding names a tag that none
     /// of the event types declare: such a binding applies to nothing, so is a mistake.
+    /// Throws `LedjerError.duplicateEventType` if two of the Swift types declare the same event type.
     public init(_ eventTypes: [any Event.Type], where tagBindings: TagBindings = [:]) throws {
+        try checkEventTypesAreUnique(eventTypes.map { (type: $0.eventType, swift: $0) })
         let infos = Set(eventTypes.map { EventTypeInfo($0) })
         let known = infos.reduce(into: Set<TagPath>()) { $0.formUnion($1.tags) }
         let unknown = tagBindings.keys.filter { !known.contains($0) }

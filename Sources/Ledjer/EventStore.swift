@@ -8,6 +8,11 @@ public enum LedjerError: Error, CustomStringConvertible {
     case invalidQuery(String)
     /// The condition of an append found matching events, so nothing was appended.
     case appendConditionFailed
+    /// Different Swift types declare the same event type, in one query or one view.
+    case duplicateEventType(EventType, swiftTypes: [String])
+    /// A view has two bindings for the same event type with the same tag bindings: every event they
+    /// select would match both.
+    case duplicateBinding(eventType: EventType)
     /// A view got an event for which not exactly one binding applies.
     case expectedExactlyOneBinding(eventType: EventType, matching: Int)
     /// A runtime tag binding differs from the one a view binding fixes.
@@ -19,6 +24,11 @@ public enum LedjerError: Error, CustomStringConvertible {
         switch self {
         case .invalidQuery(let why): "Invalid ledjer query: \(why)"
         case .appendConditionFailed: "Append condition failed: matching events exist"
+        case .duplicateEventType(let type, let swiftTypes):
+            "Event type \(type) is declared by more than one Swift type: \(swiftTypes.joined(separator: ", ")). "
+                + "Event types must be unique"
+        case .duplicateBinding(let type):
+            "Two bindings for \(type) with the same tag bindings: every event they select would match both"
         case .expectedExactlyOneBinding(let type, let n):
             "Expected exactly one matching binding per event, but \(n) match \(type)"
         case .tagBindingConflict(let type, let tags):

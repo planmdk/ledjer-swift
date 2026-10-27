@@ -121,8 +121,17 @@ or equal events can compare unequal.
   one subscription each in both, so a tagged duplicate runs twice there too.)
 - **Duplicate bindings** of a view are an error. Clojure collects the bindings that match an event into a
   map keyed by the binding's type (and tag bindings), so identical keys collapse and the last reducer
-  wins (`into {}`); here two `.on(A.self)` match the same event, and the view throws "exactly one
-  binding" when it meets one.
+  wins (`into {}`); here two bindings of one type with the same tag bindings make `run(on:)`/`start(on:)`
+  throw `LedjerError.duplicateBinding`, before anything is read. (Views are plain values built without
+  `try`, so the check is at run/start, not at construction.) Bindings that differ in their tag bindings
+  but still both match an event can only be found per event: the view throws "exactly one binding" then.
+- **Duplicate event types** are an error where they can be seen. Clojure notes a re-registered event type
+  (`tap>`) and the last definition wins. There is no registry here: a Swift type is named where it is used,
+  so two types declaring the same `eventType` would select each other's events and decode each other's
+  payloads, and only the places that see both can notice. `EventQuery.of(…)`/`EventQueryItem.init` throw
+  `LedjerError.duplicateEventType` for two Swift types with one event type, and so do `run(on:)` and
+  `start(on:)` of a view with such bindings. Two such types that never meet in one query or view
+  aren't detected. (An *empty* event type is accepted, as in Clojure.)
 - **Persisted views** keep Clojure's `close()` semantics: stop has priority over queued events, so
   closing commits only what was already applied (the rest is left for the next run, which resumes
   after the checkpoint), waits for the worker at most `closeTimeout` (5 s), and then closes the accumulator.

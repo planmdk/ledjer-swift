@@ -6,12 +6,14 @@ import Foundation
 /// narrowed by tag bindings. Type-erased, so bindings for different event types can live together.
 struct EventSelector: Sendable {
     let eventType: EventTypeInfo
+    let swiftType: any Event.Type
     let tagBindings: TagBindings
     /// The values of the event's tags, computed from the decoded event.
     let tagValues: @Sendable (StoredEvent) throws -> [TagPath: Scalar]
 
     init<E: Event>(_ type: E.Type, where tagBindings: TagBindings) {
         self.eventType = EventTypeInfo(type)
+        self.swiftType = type
         self.tagBindings = tagBindings
         self.tagValues = { event in
             E.tagValues(of: try event.decode(E.self), metadata: event.metadata)
@@ -43,6 +45,24 @@ struct EventSelector: Sendable {
     }
 }
 
+/// Throws if the bindings of a view can't be right whatever events arrive: two Swift types that share an
+/// event type (`LedjerError.duplicateEventType`), or two bindings of one type with the same tag bindings
+/// (`LedjerError.duplicateBinding`, which would otherwise surface as "exactly one binding" with the first
+/// event of that type). Views are plain values, built without `try`, so this runs when a view is run or
+/// started, before anything is read.
+///
+/// Bindings of one type with different tag bindings are fine, and may overlap: whether they do depends on
+/// the events, which is checked per event, by `route`.
+func checkBindings(_ selectors: [EventSelector]) throws {
+    try checkEventTypesAreUnique(selectors.map { (type: $0.eventType.type, swift: $0.swiftType) })
+    for (index, selector) in selectors.enumerated() {
+        let duplicated = selectors[..<index].contains {
+            $0.eventType.type == selector.eventType.type && $0.tagBindings == selector.tagBindings
+        }
+        if duplicated { throw LedjerError.duplicateBinding(eventType: selector.eventType.type) }
+    }
+}
+
 /// The handler of the one binding that applies to `event`. Throws unless exactly one does.
 func route<Handler>(_ event: StoredEvent, among bindings: [(selector: EventSelector, handler: Handler)]) throws -> Handler {
     var matching: [Handler] = []
@@ -61,6 +81,7 @@ func route<Handler>(_ event: StoredEvent, among bindings: [(selector: EventSelec
 /// A `.any` on either side yields to the other. Otherwise a runtime binding
 /// that differs from the selector's own is a conflict.
 func query(for selectors: [EventSelector], narrowedBy runtime: TagBindings = [:]) throws -> EventQuery {
+    try checkBindings(selectors)
     let known = selectors.reduce(into: Set<TagPath>()) { $0.formUnion($1.eventType.tags) }
     let unknown = runtime.keys.filter { !known.contains($0) }
     guard unknown.isEmpty else {
@@ -131,7 +152,10 @@ public struct StateViewBinding<Acc: Sendable>: Sendable {
 /// ```
 ///
 /// Every event the view reads must have exactly one binding that applies, or
-/// running the view throws.
+/// running the view throws. Running it also throws, before reading anything, if its bindings
+/// can't be right whatever the events: two Swift types that declare the same event type
+/// (`LedjerError.duplicateEventType`), or two bindings of a type with the same tag bindings
+/// (`LedjerError.duplicateBinding`).
 public struct StateView<Acc: Sendable>: Sendable {
     public let initial: Acc
     let bindings: [StateViewBinding<Acc>]
