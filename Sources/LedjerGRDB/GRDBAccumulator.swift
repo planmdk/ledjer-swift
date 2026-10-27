@@ -4,7 +4,7 @@ import Ledjer
 
 /// One step of a persisted view's update of its read model: any writes to the database.
 public struct GRDBOperation: Sendable {
-    public let run: @Sendable (Database) throws -> Void
+    let run: @Sendable (Database) throws -> Void
     public init(_ run: @escaping @Sendable (Database) throws -> Void) { self.run = run }
 }
 

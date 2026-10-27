@@ -106,10 +106,10 @@ extension Event {
     public static var tags: [EventTag<Self>] { [] }
 
     /// The tag paths of this type, usable through an existential metatype.
-    public static var tagPaths: Set<TagPath> { Set(tags.map(\.path)) }
+    static var tagPaths: Set<TagPath> { Set(tags.map(\.path)) }
 
     /// The values of this type's tags for `event`. Tags without a value are left out.
-    public static func tagValues(of event: Self, metadata: Metadata) -> [TagPath: Scalar] {
+    static func tagValues(of event: Self, metadata: Metadata) -> [TagPath: Scalar] {
         var values: [TagPath: Scalar] = [:]
         for tag in tags {
             if let value = tag.extract(event, metadata) {
@@ -178,16 +178,17 @@ public struct StoredEvent: Hashable, Sendable {
     }
 }
 
-/// JSON coding used for payloads and metadata.
-public enum JSONCoding {
-    public static func encode<T: Encodable>(_ value: T) throws -> Data {
+/// JSON coding used for payloads and metadata. Shared with the GRDB store, not for clients: a store
+/// that keeps metadata can encode `Metadata` (its `Scalar`s are `Codable`) any way it likes.
+package enum JSONCoding {
+    package static func encode<T: Encodable>(_ value: T) throws -> Data {
         let encoder = JSONEncoder()
         // Deterministic bytes, so equal events have equal payloads.
         encoder.outputFormatting = [.sortedKeys]
         return try encoder.encode(value)
     }
 
-    public static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+    package static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         try JSONDecoder().decode(type, from: data)
     }
 }

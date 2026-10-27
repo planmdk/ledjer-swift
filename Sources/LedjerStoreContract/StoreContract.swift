@@ -675,95 +675,95 @@ extension StoreContract {
 
     // MARK: - Contract events
 
-    public struct UUIDTagged: Event {
-        public static let eventType: EventType = "contract/uuid-tagged"
-        public static var tags: [EventTag<Self>] { [EventTag("id", \.id)] }
-        public var id: UUID
-        public var num: Int
-        public init(id: UUID, num: Int) { (self.id, self.num) = (id, num) }
+    package struct UUIDTagged: Event {
+        package static let eventType: EventType = "contract/uuid-tagged"
+        package static var tags: [EventTag<Self>] { [EventTag("id", \.id)] }
+        package var id: UUID
+        package var num: Int
+        package init(id: UUID, num: Int) { (self.id, self.num) = (id, num) }
     }
 
-    public struct OrderPlaced: Event {
-        public static let eventType: EventType = "contract/order-placed"
-        public static var tags: [EventTag<Self>] { [EventTag("orderId", \.orderId), EventTag("customer", \.customer)] }
-        public var orderId: UUID
-        public var customer: String?
-        public init(orderId: UUID, customer: String? = nil) { (self.orderId, self.customer) = (orderId, customer) }
+    package struct OrderPlaced: Event {
+        package static let eventType: EventType = "contract/order-placed"
+        package static var tags: [EventTag<Self>] { [EventTag("orderId", \.orderId), EventTag("customer", \.customer)] }
+        package var orderId: UUID
+        package var customer: String?
+        package init(orderId: UUID, customer: String? = nil) { (self.orderId, self.customer) = (orderId, customer) }
     }
 
     /// Carries an `orderId` but doesn't tag it.
-    public struct OrderNoted: Event {
-        public static let eventType: EventType = "contract/order-noted"
-        public var orderId: UUID
-        public var note: String
-        public init(orderId: UUID, note: String) { (self.orderId, self.note) = (orderId, note) }
+    package struct OrderNoted: Event {
+        package static let eventType: EventType = "contract/order-noted"
+        package var orderId: UUID
+        package var note: String
+        package init(orderId: UUID, note: String) { (self.orderId, self.note) = (orderId, note) }
     }
 
     /// Tags of the other scalar types: an `Int` and a `Bool`.
-    public struct Flagged: Event {
-        public static let eventType: EventType = "contract/flagged"
-        public static var tags: [EventTag<Self>] { [EventTag("n", \.n), EventTag("active", \.active)] }
-        public var n: Int
-        public var active: Bool
-        public init(n: Int, active: Bool) { (self.n, self.active) = (n, active) }
+    package struct Flagged: Event {
+        package static let eventType: EventType = "contract/flagged"
+        package static var tags: [EventTag<Self>] { [EventTag("n", \.n), EventTag("active", \.active)] }
+        package var n: Int
+        package var active: Bool
+        package init(n: Int, active: Bool) { (self.n, self.active) = (n, active) }
     }
 
     /// A string tag, for values with characters that strings are easily mishandled by.
-    public struct StringTagged: Event {
-        public static let eventType: EventType = "contract/string-tagged"
-        public static var tags: [EventTag<Self>] { [EventTag("name", \.name)] }
-        public var name: String
-        public init(name: String) { self.name = name }
+    package struct StringTagged: Event {
+        package static let eventType: EventType = "contract/string-tagged"
+        package static var tags: [EventTag<Self>] { [EventTag("name", \.name)] }
+        package var name: String
+        package init(name: String) { self.name = name }
     }
 
     /// Two tags whose names differ only after a NUL.
-    public struct NulKeys: Event {
-        public static let eventType: EventType = "contract/nul-keys"
-        public static var tags: [EventTag<Self>] { [EventTag("k", \.plain), EventTag("k\u{0}x", \.other)] }
-        public var plain: String
-        public var other: String
-        public init(plain: String, other: String) { (self.plain, self.other) = (plain, other) }
+    package struct NulKeys: Event {
+        package static let eventType: EventType = "contract/nul-keys"
+        package static var tags: [EventTag<Self>] { [EventTag("k", \.plain), EventTag("k\u{0}x", \.other)] }
+        package var plain: String
+        package var other: String
+        package init(plain: String, other: String) { (self.plain, self.other) = (plain, other) }
     }
 
-    public struct NulTypeShort: Event {
-        public static let eventType: EventType = "contract/nul"
-        public init() {}
+    package struct NulTypeShort: Event {
+        package static let eventType: EventType = "contract/nul"
+        package init() {}
     }
 
     /// Its type differs from `NulTypeShort`'s only after a NUL.
-    public struct NulTypeLong: Event {
-        public static let eventType: EventType = "contract/nul\u{0}long"
-        public init() {}
+    package struct NulTypeLong: Event {
+        package static let eventType: EventType = "contract/nul\u{0}long"
+        package init() {}
     }
 
     /// Two tags whose names are canonically equivalent but not byte-equal ("café", precomposed and decomposed).
-    public struct NormalizedKeys: Event {
-        public static let eventType: EventType = "contract/normalized-keys"
-        public static var tags: [EventTag<Self>] {
+    package struct NormalizedKeys: Event {
+        package static let eventType: EventType = "contract/normalized-keys"
+        package static var tags: [EventTag<Self>] {
             [EventTag("caf\u{e9}", \.precomposed), EventTag("cafe\u{301}", \.decomposed)]
         }
-        public var precomposed: String
-        public var decomposed: String
-        public init(precomposed: String, decomposed: String) { (self.precomposed, self.decomposed) = (precomposed, decomposed) }
+        package var precomposed: String
+        package var decomposed: String
+        package init(precomposed: String, decomposed: String) { (self.precomposed, self.decomposed) = (precomposed, decomposed) }
     }
 
-    public struct NFCType: Event {
-        public static let eventType: EventType = "contract/caf\u{e9}"
-        public init() {}
+    package struct NFCType: Event {
+        package static let eventType: EventType = "contract/caf\u{e9}"
+        package init() {}
     }
 
     /// Its type is canonically equivalent to `NFCType`'s, but not byte-equal.
-    public struct NFDType: Event {
-        public static let eventType: EventType = "contract/cafe\u{301}"
-        public init() {}
+    package struct NFDType: Event {
+        package static let eventType: EventType = "contract/cafe\u{301}"
+        package init() {}
     }
 
-    public struct VersionTagged: Event {
-        public static let eventType: EventType = "contract/version-tagged"
-        public static let version = 2
-        public static var tags: [EventTag<Self>] { [EventTag("id", \.id), .metadata("version")] }
-        public var id: String
-        public init(id: String) { self.id = id }
+    package struct VersionTagged: Event {
+        package static let eventType: EventType = "contract/version-tagged"
+        package static let version = 2
+        package static var tags: [EventTag<Self>] { [EventTag("id", \.id), .metadata("version")] }
+        package var id: String
+        package init(id: String) { self.id = id }
     }
 
     // MARK: - Subscription helper

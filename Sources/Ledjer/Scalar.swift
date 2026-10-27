@@ -44,6 +44,10 @@ public enum Scalar: Hashable, Sendable {
 extension Scalar {
     /// A type-prefixed string encoding, e.g. `uuid:6F9…`, `int:42`. Stores
     /// can use it to match on type and value with plain string equality.
+    ///
+    /// Public for third-party `EventStore`s: they have to persist the tags and the metadata of events, and
+    /// this is the encoding that `Scalar`'s `Codable` conformance and the GRDB store use. Compare the
+    /// result by bytes (see the notes on `Scalar`), not with a collation that folds case or normalizes.
     public var encoded: String {
         switch self {
         case .string(let v): "string:\(v)"
@@ -53,6 +57,7 @@ extension Scalar {
         }
     }
 
+    /// The inverse of `encoded`. `nil` if `encoded` isn't one.
     public init?(encoded: String) {
         guard let colon = encoded.firstIndex(of: ":") else { return nil }
         let prefix = encoded[..<colon]

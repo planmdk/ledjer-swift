@@ -26,7 +26,7 @@ public struct EventTypeInfo: Hashable, Sendable {
     public let type: EventType
     public let tags: Set<TagPath>
 
-    public init(_ eventType: any Event.Type) {
+    init(_ eventType: any Event.Type) {
         self.type = eventType.eventType
         self.tags = eventType.tagPaths
     }
