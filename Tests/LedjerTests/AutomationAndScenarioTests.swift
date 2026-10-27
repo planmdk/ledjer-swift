@@ -228,6 +228,23 @@ private func reactImmediately(_ store: any EventStore) async throws -> Automatio
         #expect(errors.value == 0)
     }
 
+    @Test func noBodyStartsAfterStop() async throws {
+        let store = InMemoryEventStore()
+        let started = Counter()
+        let gate = ContinuationGate()
+        let running = try await automation(on: store, triggers: [.event(Counted.self)]) { _ in
+            started.increment()
+            await gate.wait()  // ignores cancellation, as a body may
+        }
+        try await store.append((0..<5).map { Counted(id: "a", num: $0) })
+        try await started.wait(for: 1)
+        try await Task.sleep(for: .milliseconds(100))  // the other four triggers are queued behind the body
+        running.stop()
+        gate.open()
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(started.value == 1, "bodies started: \(started.value)")
+    }
+
     @Test func aFailingBodyIsReportedAndTheAutomationKeepsRunning() async throws {
         struct Boom: Error {}
         let store = InMemoryEventStore()
@@ -412,6 +429,32 @@ private struct FailingSubscriptions: EventStore {
         #expect(running.isRunning)
         running.stop()
         #expect(!running.isRunning)
+    }
+}
+
+/// Holds back whoever waits until `open()`, whether or not they get cancelled meanwhile.
+final class ContinuationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let proceed = lock.withLock {
+                if !isOpen { waiters.append(continuation) }
+                return isOpen
+            }
+            if proceed { continuation.resume() }
+        }
+    }
+
+    func open() {
+        let toResume = lock.withLock {
+            isOpen = true
+            defer { waiters = [] }
+            return waiters
+        }
+        toResume.forEach { $0.resume() }
     }
 }
 
