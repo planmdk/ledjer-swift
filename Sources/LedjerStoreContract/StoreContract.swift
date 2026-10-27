@@ -17,90 +17,6 @@ public struct ContractFailure: Error, CustomStringConvertible {
 
 public typealias StoreFactory = @Sendable () async throws -> any EventStore
 
-public func check(_ condition: Bool, _ message: @autoclosure () -> String, line: Int = #line) throws {
-    if !condition { throw ContractFailure(message: "line \(line): \(message())") }
-}
-
-// MARK: - Contract events
-
-public struct UUIDTagged: Event {
-    public static let eventType: EventType = "contract/uuid-tagged"
-    public static var tags: [EventTag<Self>] { [EventTag("id", \.id)] }
-    public var id: UUID
-    public var num: Int
-    public init(id: UUID, num: Int) { (self.id, self.num) = (id, num) }
-}
-
-public struct OrderPlaced: Event {
-    public static let eventType: EventType = "contract/order-placed"
-    public static var tags: [EventTag<Self>] { [EventTag("orderId", \.orderId), EventTag("customer", \.customer)] }
-    public var orderId: UUID
-    public var customer: String?
-    public init(orderId: UUID, customer: String? = nil) { (self.orderId, self.customer) = (orderId, customer) }
-}
-
-/// Carries an `orderId` but doesn't tag it.
-public struct OrderNoted: Event {
-    public static let eventType: EventType = "contract/order-noted"
-    public var orderId: UUID
-    public var note: String
-    public init(orderId: UUID, note: String) { (self.orderId, self.note) = (orderId, note) }
-}
-
-public struct VersionTagged: Event {
-    public static let eventType: EventType = "contract/version-tagged"
-    public static let version = 2
-    public static var tags: [EventTag<Self>] { [EventTag("id", \.id), .metadata("version")] }
-    public var id: String
-    public init(id: String) { self.id = id }
-}
-
-// MARK: - Subscription helper
-
-/// Collects what a subscription delivers.
-public final class Collector: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _events: [StoredEvent] = []
-    private var _error: (any Error)?
-    private var task: Task<Void, Never>?
-
-    public init(_ stream: AsyncThrowingStream<StoredEvent, any Error>) {
-        task = Task { [self] in
-            do {
-                for try await event in stream {
-                    lock.withLock { _events.append(event) }
-                }
-            } catch {
-                lock.withLock { _error = error }
-            }
-        }
-    }
-
-    public var events: [StoredEvent] { lock.withLock { _events } }
-    public var error: (any Error)? { lock.withLock { _error } }
-
-    /// Waits until nothing has arrived for `quiet`, at most `timeout`, and returns what arrived.
-    public func settled(quiet: Duration = .milliseconds(200), timeout: Duration = .seconds(20)) async throws -> [StoredEvent] {
-        let clock = ContinuousClock()
-        let deadline = clock.now + timeout
-        var count = events.count
-        while clock.now < deadline {
-            try await Task.sleep(for: quiet)
-            if let error { throw error }
-            let now = events.count
-            if now == count { return events }
-            count = now
-        }
-        throw ContractFailure(message: "subscription did not settle")
-    }
-
-    public func cancel() { task?.cancel() }
-}
-
-public func orderIds(_ events: [StoredEvent]) throws -> [UUID] {
-    try events.map { try $0.decode(OrderPlaced.self).orderId }
-}
-
 // MARK: - The contract
 
 public enum StoreContract {
@@ -495,5 +411,93 @@ public enum StoreContract {
             if case .failure(let error) = await consumer.result { failures.append("\(error)") }
         }
         try check(failures.isEmpty, "cancelling a consumer failed its stream: \(failures)")
+    }
+}
+
+// The events and helpers of the checks live in the namespace of `StoreContract`, so that they
+// don't pollute that of the test target that imports this module.
+extension StoreContract {
+    static func check(_ condition: Bool, _ message: @autoclosure () -> String, line: Int = #line) throws {
+        if !condition { throw ContractFailure(message: "line \(line): \(message())") }
+    }
+
+    // MARK: - Contract events
+
+    public struct UUIDTagged: Event {
+        public static let eventType: EventType = "contract/uuid-tagged"
+        public static var tags: [EventTag<Self>] { [EventTag("id", \.id)] }
+        public var id: UUID
+        public var num: Int
+        public init(id: UUID, num: Int) { (self.id, self.num) = (id, num) }
+    }
+
+    public struct OrderPlaced: Event {
+        public static let eventType: EventType = "contract/order-placed"
+        public static var tags: [EventTag<Self>] { [EventTag("orderId", \.orderId), EventTag("customer", \.customer)] }
+        public var orderId: UUID
+        public var customer: String?
+        public init(orderId: UUID, customer: String? = nil) { (self.orderId, self.customer) = (orderId, customer) }
+    }
+
+    /// Carries an `orderId` but doesn't tag it.
+    public struct OrderNoted: Event {
+        public static let eventType: EventType = "contract/order-noted"
+        public var orderId: UUID
+        public var note: String
+        public init(orderId: UUID, note: String) { (self.orderId, self.note) = (orderId, note) }
+    }
+
+    public struct VersionTagged: Event {
+        public static let eventType: EventType = "contract/version-tagged"
+        public static let version = 2
+        public static var tags: [EventTag<Self>] { [EventTag("id", \.id), .metadata("version")] }
+        public var id: String
+        public init(id: String) { self.id = id }
+    }
+
+    // MARK: - Subscription helper
+
+    /// Collects what a subscription delivers.
+    final class Collector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _events: [StoredEvent] = []
+        private var _error: (any Error)?
+        private var task: Task<Void, Never>?
+
+        init(_ stream: AsyncThrowingStream<StoredEvent, any Error>) {
+            task = Task { [self] in
+                do {
+                    for try await event in stream {
+                        lock.withLock { _events.append(event) }
+                    }
+                } catch {
+                    lock.withLock { _error = error }
+                }
+            }
+        }
+
+        var events: [StoredEvent] { lock.withLock { _events } }
+        var error: (any Error)? { lock.withLock { _error } }
+
+        /// Waits until nothing has arrived for `quiet`, at most `timeout`, and returns what arrived.
+        func settled(quiet: Duration = .milliseconds(200), timeout: Duration = .seconds(20)) async throws -> [StoredEvent] {
+            let clock = ContinuousClock()
+            let deadline = clock.now + timeout
+            var count = events.count
+            while clock.now < deadline {
+                try await Task.sleep(for: quiet)
+                if let error { throw error }
+                let now = events.count
+                if now == count { return events }
+                count = now
+            }
+            throw ContractFailure(message: "subscription did not settle")
+        }
+
+        func cancel() { task?.cancel() }
+    }
+
+    static func orderIds(_ events: [StoredEvent]) throws -> [UUID] {
+        try events.map { try $0.decode(OrderPlaced.self).orderId }
     }
 }
