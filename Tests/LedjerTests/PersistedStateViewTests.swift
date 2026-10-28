@@ -161,6 +161,37 @@ private func fastOptions(maxSize: Int = 64, maxInterval: Duration = .millisecond
         } catch PersistedViewError.awaitTimedOut {}
     }
 
+    @Test func theViewClosesTheAccumulatorWhenTheScenarioFails() async throws {
+        struct Boom: Error {}
+        let failing = PersistedStateView<Add>(bindings: [.on(Counted.self) { _ in throw Boom() }])
+        // A slow `close()`: a view that was merely dropped would close it in the background, later.
+        let given: [any Event] = [Counted(id: "a", num: 1)]
+
+        let unsatisfied = SlowAccumulator(closeDelay: .milliseconds(100))
+        await #expect(throws: ScenarioFailure.self) {
+            try await gt(view: totalsView, accumulator: unsatisfied, given: given, then: { _ in false })
+        }
+        #expect(await unsatisfied.closed, "closed after `then` was not satisfied")
+
+        let throwing = SlowAccumulator(closeDelay: .milliseconds(100))
+        await #expect(throws: PersistedViewError.self) {
+            try await gt(view: failing, accumulator: throwing, given: given, then: { _ in true })
+        }
+        #expect(await throwing.closed, "closed after the view failed")
+
+        let timedOut = SlowAccumulator(closeDelay: .milliseconds(100))
+        await #expect(throws: PersistedViewError.self) {
+            try await gt(
+                view: totalsView, accumulator: timedOut, options: { $0.maxInterval = .seconds(30) },
+                given: given, then: { _ in true }, timeout: .milliseconds(100))
+        }
+        #expect(await timedOut.closed, "closed after waiting for the view timed out")
+
+        let passing = SlowAccumulator(closeDelay: .milliseconds(100))
+        try await gt(view: totalsView, accumulator: passing, given: given, then: { _ in true })
+        #expect(await passing.closed, "closed after the scenario passed")
+    }
+
     @Test func waitsForTheLastAppliedEventWhenTheLastGivenIsNotApplied() async throws {
         try await gt(
             view: totalsView,
