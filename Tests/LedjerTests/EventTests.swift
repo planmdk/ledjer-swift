@@ -10,7 +10,43 @@ struct TestEvent2: Event {
     var num: Int
 }
 
+struct DuplicateTagged: Event {
+    static let eventType: EventType = "test/duplicate-tagged"
+    static var tags: [EventTag<Self>] { [EventTag("id", \.a), EventTag("id", \.b)] }
+    var a: String
+    var b: String
+}
+
+/// Same name, different source: two tags, not a duplicate.
+struct SameNameOtherSource: Event {
+    static let eventType: EventType = "test/same-name-other-source"
+    static var tags: [EventTag<Self>] { [EventTag("version", \.version), .metadata("version")] }
+    var version: Int
+}
+
 @Suite struct EventTests {
+    @Test func twoTagsWithOnePathAreRefused() async throws {
+        func expectDuplicate(_ body: () async throws -> Void) async {
+            do {
+                try await body()
+                Issue.record("expected a duplicate tag")
+            } catch LedjerError.duplicateTag(let type, let tag) {
+                #expect(type == DuplicateTagged.eventType)
+                #expect(tag == .payload("id"))
+            } catch {
+                Issue.record("expected a duplicate tag, got \(error)")
+            }
+        }
+        await expectDuplicate { _ = try NewEvent(DuplicateTagged(a: "a", b: "b")) }
+        // Through the append that goes via NewEvent, which every store shares: nothing is appended.
+        let store = InMemoryEventStore()
+        await expectDuplicate { try await store.append([OrderPlaced(orderId: UUID()), DuplicateTagged(a: "a", b: "b")]) }
+        #expect(try await store.allEvents().isEmpty)
+        // The same name under another source is a different tag.
+        let event = try NewEvent(SameNameOtherSource(version: 5))
+        #expect(event.tags == [.payload("version"): .int(5), .metadata("version"): .int(1)])
+    }
+
     @Test func newEventCarriesTypeMetadataPayloadAndTags() throws {
         let event = try NewEvent(TestEvent2(id: "test-123", num: 42), metadata: ["happy": .bool(true)])
         #expect(event.type == "test/event-2")

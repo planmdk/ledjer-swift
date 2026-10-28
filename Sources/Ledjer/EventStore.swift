@@ -10,6 +10,8 @@ public enum LedjerError: Error, CustomStringConvertible {
     case appendConditionFailed
     /// Different Swift types declare the same event type, in one query or one view.
     case duplicateEventType(EventType, swiftTypes: [String])
+    /// An event type declares two tags with the same path, so one would silently hide the other.
+    case duplicateTag(eventType: EventType, tag: TagPath)
     /// A view has two bindings for the same event type with the same tag bindings: every event they
     /// select would match both.
     case duplicateBinding(eventType: EventType)
@@ -27,6 +29,8 @@ public enum LedjerError: Error, CustomStringConvertible {
         case .duplicateEventType(let type, let swiftTypes):
             "Event type \(type) is declared by more than one Swift type: \(swiftTypes.joined(separator: ", ")). "
                 + "Event types must be unique"
+        case .duplicateTag(let type, let tag):
+            "Event type \(type) declares the tag \(tag) more than once. Tag names must be unique per source"
         case .duplicateBinding(let type):
             "Two bindings for \(type) with the same tag bindings: every event they select would match both"
         case .expectedExactlyOneBinding(let type, let n):

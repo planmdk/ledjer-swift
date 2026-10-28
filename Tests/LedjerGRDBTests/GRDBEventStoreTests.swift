@@ -99,6 +99,22 @@ private let poolFactory: StoreFactory = { try GRDBEventStore(DatabasePool(path: 
         }
     }
 
+    @Test func anEventTypeWithTwoTagsOfOnePathIsRefusedBeforeAnythingIsWritten() async throws {
+        struct Twice: Event {
+            static let eventType: EventType = "grdb-test/twice"
+            static var tags: [EventTag<Self>] { [EventTag("id", \.a), EventTag("id", \.b)] }
+            var a: String
+            var b: String
+        }
+        let queue = try DatabaseQueue()
+        let store = try GRDBEventStore(queue)
+        await #expect(throws: LedjerError.self) {
+            try await store.append([OrderPlaced(orderId: UUID()), Twice(a: "a", b: "b")])
+        }
+        let count = try await queue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM ledjer_event")! }
+        #expect(count == 0)
+    }
+
     @Test func moreSelectorsThanSQLiteCanCombineAreRefusedClearly() async throws {
         let queue = try DatabaseQueue()
         let store = try GRDBEventStore(queue)

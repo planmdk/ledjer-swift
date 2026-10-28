@@ -150,7 +150,14 @@ public struct NewEvent: Hashable, Sendable {
 
     /// Creates a new event from `event`. Extra `metadata` (e.g. a correlation
     /// id) is stored alongside the automatic `version`.
+    ///
+    /// Throws `LedjerError.duplicateTag` if `E.tags` declares one tag path twice: the last would win
+    /// and the other could never be found. (This is the one place both stores' appends go through.)
     public init<E: Event>(_ event: E, metadata: Metadata = [:]) throws {
+        var declared = Set<TagPath>()
+        for tag in E.tags where !declared.insert(tag.path).inserted {
+            throw LedjerError.duplicateTag(eventType: E.eventType, tag: tag.path)
+        }
         var metadata = metadata
         metadata["version"] = .int(E.version)
         self.init(

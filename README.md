@@ -135,6 +135,11 @@ or equal events can compare unequal.
   keys differ there, so it keeps both: with no events the view returns its initial value, and at the first
   such event it throws "exactly one binding" instead; Swift throws the same mistake earlier. (Views are plain values built without `try`, so the check is at run/start, not at construction.) Bindings that differ in their tag bindings
   but still both match an event can only be found per event: the view throws "exactly one binding" then.
+- **Duplicate tags** of an event type are an error. Clojure tags are paths into the event, so it has no
+  such thing; here `Event.tags` names its tags, and two `EventTag`s with the same name (and source, payload
+  or metadata) would make the last one silently win and the other unfindable. Creating a `NewEvent` of such a
+  type, which every append of typed events does, throws `LedjerError.duplicateTag`, so neither store
+  writes anything. A payload and a metadata tag of one name are two tags, which is fine.
 - **Duplicate event types** are an error where they can be seen. Clojure notes a re-registered event type
   (`tap>`) and the last definition wins. There is no registry here: a Swift type is named where it is used,
   so two types declaring the same `eventType` would select each other's events and decode each other's
