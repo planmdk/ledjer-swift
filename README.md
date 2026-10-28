@@ -131,8 +131,9 @@ or equal events can compare unequal.
   map keyed by the binding's type (and tag bindings), so identical keys collapse and the last reducer
   wins (`into {}`); here two bindings of one type with the same tag bindings make `run(on:)`/`start(on:)`
   throw `LedjerError.duplicateBinding`, before anything is read; a `.any` tag binding counts as none, since it
-  matches everything (so `.on(E.self)` and `.on(E.self, where: [tag: .any])` are duplicates; Clojure's
-  keys differ there). (Views are plain values built without `try`, so the check is at run/start, not at construction.) Bindings that differ in their tag bindings
+  matches everything (so `.on(E.self)` and `.on(E.self, where: [tag: .any])` are duplicates). Clojure's
+  keys differ there, so it keeps both: with no events the view returns its initial value, and at the first
+  such event it throws "exactly one binding" instead; Swift throws the same mistake earlier. (Views are plain values built without `try`, so the check is at run/start, not at construction.) Bindings that differ in their tag bindings
   but still both match an event can only be found per event: the view throws "exactly one binding" then.
 - **Duplicate event types** are an error where they can be seen. Clojure notes a re-registered event type
   (`tap>`) and the last definition wins. There is no registry here: a Swift type is named where it is used,
