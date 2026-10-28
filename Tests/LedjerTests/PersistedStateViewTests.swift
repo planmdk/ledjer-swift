@@ -762,6 +762,37 @@ final class SleepRecorder: @unchecked Sendable {
         #expect(await acc.closed)
     }
 
+    /// There is nothing past `Int.max`: the start position saturates instead of overflowing.
+    @Test func aCheckpointAtIntMaxStartsTheViewAndReadsNothingPastIt() async throws {
+        let store = InMemoryEventStore()
+        try await store.append([Counted(id: "a", num: 1)])
+        let acc = TotalsAccumulator(lastSequence: .max)
+        let view = try await totalsView.start(on: store, accumulator: acc, options: fastOptions())
+        try await store.append([Counted(id: "a", num: 2)])
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(view.failure == nil)
+        #expect(await acc.commitAttempts == 0)
+        #expect(await acc.total("a") == 0)
+        try await view.awaitPosition(nil)
+        await view.close()
+        #expect(await acc.sequenceNumber == .max)
+    }
+
+    /// Subscriptions start at `startPosition` inclusive, so a store may hand over the event at `Int.max`:
+    /// the checkpoint says it has been applied.
+    @Test func anEventAtTheCheckpointIsNotAppliedAgain() async throws {
+        let new = try NewEvent(Counted(id: "a", num: 1))
+        let event = StoredEvent(position: .max, type: new.type, metadata: new.metadata, payload: new.payload)
+        let store = ScriptedSubscriptions(script: .floods(events: [event], terminated: Counter()))
+        let acc = TotalsAccumulator(lastSequence: .max)
+        let view = try await totalsView.start(on: store, accumulator: acc, options: fastOptions())
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(view.failure == nil)
+        #expect(await acc.commitAttempts == 0)
+        #expect(await acc.total("a") == 0)
+        await view.close()
+    }
+
     @Test func aSubscriptionThatEndsFailsTheView() async throws {
         for script in [ScriptedSubscriptions.Script.endsCleanly, .fails] {
             let store = ScriptedSubscriptions(script: script)

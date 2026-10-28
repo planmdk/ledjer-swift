@@ -382,7 +382,9 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
 
     func begin() async throws {
         let committed = try await acc.sequenceNumber
-        let start = committed.map { $0 + 1 } ?? 0
+        // A checkpoint of `Int.max` has nothing past it: saturate instead of trapping. Subscribing from
+        // `Int.max` is inclusive, so the pump below drops anything at or before the checkpoint.
+        let start = committed.map { $0 == .max ? $0 : $0 + 1 } ?? 0
         let stream: AsyncThrowingStream<StoredEvent, any Error>
         do {
             stream = try await store.subscribe(query, startPosition: start)
@@ -396,6 +398,7 @@ final class PersistedViewEngine<Accumulator: PersistedAccumulator>: @unchecked S
             do {
                 // Once the worker has closed the inbox nobody reads: stop reading the log too.
                 for try await event in stream {
+                    if let committed, event.position <= committed { continue }
                     if !(await inbox.send(.event(event))) { return }
                 }
                 await inbox.send(.subscriptionEnded(nil))
