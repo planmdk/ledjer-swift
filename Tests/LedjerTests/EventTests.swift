@@ -23,6 +23,12 @@ struct TestEvent2: Event {
         #expect(try NewEvent(VersionTagged(id: "a")).metadata["version"] == .int(2))
     }
 
+    @Test func theEventsVersionOverridesUserMetadata() throws {
+        // As in Clojure: (merge metadata {:version v}).
+        let event = try NewEvent(VersionTagged(id: "a"), metadata: ["version": .int(99), "other": .int(1)])
+        #expect(event.metadata == ["version": .int(2), "other": .int(1)])
+    }
+
     @Test func scalarEncodingRoundTrips() {
         let id = UUID()
         var scalars: [Scalar] = [
