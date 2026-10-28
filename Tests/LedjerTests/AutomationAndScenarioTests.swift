@@ -30,6 +30,30 @@ private func reactImmediately(_ store: any EventStore) async throws -> Automatio
         try await gt(automation: slow, given: [Counted(id: "a", num: 1), Ignored(id: "x")], then: [Reacted(id: "a")], timeout: .milliseconds(500))
     }
 
+    /// `then` is read from after `given`. Were it read from the last given event itself, that event would
+    /// be the first one compared when it is of a `then` type.
+    @Test func aThenTypeThatIsAlsoTheTypeOfTheLastGivenEvent() async throws {
+        let reactToIgnored: @Sendable (any EventStore) async throws -> Automation = { store in
+            try await automation(on: store, triggers: [.event(Ignored.self)]) { store in
+                try await store.append([Counted(id: "b", num: 2)])
+            }
+        }
+        try await gt(
+            automation: reactToIgnored,
+            given: [Ignored(id: "x"), Counted(id: "a", num: 1)],
+            then: [Counted(id: "b", num: 2)]
+        )
+        // And what the given events of the type say is not mistaken for a reaction.
+        await #expect(throws: ScenarioFailure.self) {
+            try await gt(
+                automation: reactToIgnored,
+                given: [Ignored(id: "x"), Counted(id: "a", num: 1)],
+                then: [Counted(id: "a", num: 1)],
+                timeout: .milliseconds(200)
+            )
+        }
+    }
+
     @Test func timesOutWhenTheAutomationDoesNotReact() async throws {
         await #expect(throws: ScenarioFailure.self) {
             try await gt(
