@@ -37,6 +37,7 @@ private struct RacyStore: EventStore {
     @Test func sourceWithUUIDTags() async throws { try await StoreContract.sourceWithUUIDTags(Self.make) }
     @Test func sourceSelectsByTags() async throws { try await StoreContract.sourceSelectsByTagsOfTheEventsType(Self.make) }
     @Test func metadataRoundTrips() async throws { try await StoreContract.metadataRoundTrips(Self.make) }
+    @Test func starLiteralIsTheWildcard() async throws { try await StoreContract.starLiteralIsTheWildcard(Self.make) }
     @Test func intAndBoolTags() async throws { try await StoreContract.intAndBoolTags(Self.make) }
     @Test func nulCharactersAreSignificant() async throws { try await StoreContract.nulCharactersAreSignificant(Self.make) }
     @Test func unicodeNormalizationIsSignificant() async throws {

@@ -26,6 +26,7 @@ public enum StoreContract {
         try await sourceWithUUIDTags(makeStore)
         try await sourceSelectsByTagsOfTheEventsType(makeStore)
         try await metadataRoundTrips(makeStore)
+        try await starLiteralIsTheWildcard(makeStore)
         try await intAndBoolTags(makeStore)
         try await nulCharactersAreSignificant(makeStore)
         try await unicodeNormalizationIsSignificant(makeStore)
@@ -124,6 +125,76 @@ public enum StoreContract {
 
         let invalid = Result { try EventQueryItem([OrderNoted.self], where: [.payload("orderId"): "x"]) }
         try check({ if case .failure = invalid { true } else { false } }(), "binding for a tag no type has is invalid")
+    }
+
+    /// A string literal `"*"` is the wildcard, exactly as `.any` is (including for events without the tag), as
+    /// in the Clojure library; `.bound("*")` and `.value(.string("*"))` match only the exact string `"*"`.
+    public static func starLiteralIsTheWildcard(_ makeStore: StoreFactory) async throws {
+        let store = try await makeStore()
+        try await store.append([
+            StringTagged(name: "a"),  // 1
+            StringTagged(name: "*"),  // 2
+            StringTagged(name: "**"),  // 3
+            StringTagged(name: "b"),  // 4
+            OrderPlaced(orderId: UUID(), customer: "*"),  // 5
+            OrderPlaced(orderId: UUID(), customer: "a"),  // 6
+            OrderPlaced(orderId: UUID()),  // 7: carries no customer tag
+        ])
+        let name = TagPath.payload("name"), customer = TagPath.payload("customer")
+        func strings(_ binding: TagBinding) async throws -> [Position] {
+            try await store.source(EventQuery.of(StringTagged.self, where: [name: binding])).map(\.position)
+        }
+        func customers(_ binding: TagBinding) async throws -> [Position] {
+            try await store.source(EventQuery.of(OrderPlaced.self, where: [customer: binding])).map(\.position)
+        }
+
+        let literal = try await strings("*")
+        let wildcard = try await strings(.any)
+        try check(literal == [1, 2, 3, 4], "a literal \"*\" matches every event: \(literal)")
+        try check(literal == wildcard, "a literal \"*\" is the same as .any: \(literal) and \(wildcard)")
+        let literalCustomers = try await customers("*")
+        let anyCustomers = try await customers(.any)
+        try check(literalCustomers == [5, 6, 7], "a literal \"*\" matches events without the tag: \(literalCustomers)")
+        try check(literalCustomers == anyCustomers, "... as .any does: \(literalCustomers) and \(anyCustomers)")
+
+        // Anything that isn't a literal is exact, and so is a literal that isn't just "*".
+        let runtimeStar = ["*", "x"].first!  // a runtime string, whatever it looks like
+        let exact = [TagBinding.bound("*"), .value(.string("*")), .bound(runtimeStar)]
+        for binding in exact {
+            let stars = try await strings(binding)
+            try check(stars == [2], "an exact \"*\" matches only the string \"*\": \(stars)")
+            let starCustomers = try await customers(binding)
+            try check(starCustomers == [5], "... and not events without the tag: \(starCustomers)")
+        }
+        let doubleStar = try await strings("**")
+        try check(doubleStar == [3], "\"**\" is an ordinary value: \(doubleStar)")
+
+        // In lastPosition and in conditions.
+        func last(_ binding: TagBinding) async throws -> Position? {
+            try await store.lastPosition(
+                matching: EventQuery.of(StringTagged.self, where: [name: binding]), through: 7)
+        }
+        let (lastLiteral, lastAny, lastExact) = (try await last("*"), try await last(.any), try await last(.bound("*")))
+        try check(lastLiteral == 4 && lastAny == 4, "lastPosition with a literal \"*\": \(String(describing: lastLiteral)), .any: \(String(describing: lastAny))")
+        try check(lastExact == 2, "lastPosition with .bound(\"*\"): \(String(describing: lastExact))")
+        func conditionFails(_ binding: TagBinding, after: Position? = nil) async throws -> Bool {
+            do {
+                try await store.append(
+                    [UUIDTagged(id: UUID(), num: 0)],
+                    condition: AppendCondition(
+                        query: try EventQuery.of(StringTagged.self, where: [name: binding]), after: after))
+                return false
+            } catch LedjerError.appendConditionFailed {
+                return true
+            }
+        }
+        let literalFails = try await conditionFails("*", after: 3)
+        let anyFails = try await conditionFails(.any, after: 3)
+        let exactFails = try await conditionFails(.bound("*"), after: 3)
+        try check(literalFails && anyFails, "a condition on a literal \"*\" is one on .any: it fails when any event is after")
+        try check(!exactFails, "a condition on .bound(\"*\") passes when the star event is not after")
+        let exactFailsEarlier = try await conditionFails(.bound("*"), after: 1)
+        try check(exactFailsEarlier, "a condition on .bound(\"*\") fails when the star event is after")
     }
 
     /// `Int` and `Bool` tag values match by type and value, in queries, `lastPosition` and conditions.

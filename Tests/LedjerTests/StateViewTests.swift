@@ -87,6 +87,44 @@ struct MaybeTagged: Event {
         #expect(try await view.run(on: store, where: [.payload("id"): .any]) == ["x"])
     }
 
+    @Test func aStarLiteralInABindingYieldsToARuntimeValue() async throws {
+        let view = StateView(initial: [String](), bindings: [
+            .on(TestEvent.self, where: [.payload("id"): "*"]) { acc, e in acc.append(e.id) },
+        ])
+        let store = InMemoryEventStore()
+        try await store.append([TestEvent(id: "x", num: 1), TestEvent(id: "y", num: 1), TestEvent(id: "*", num: 1)])
+        #expect(try await view.run(on: store, where: [.payload("id"): "x"]) == ["x"])
+        #expect(try await view.run(on: store) == ["x", "y", "*"])
+        // A runtime star that is not a literal is an exact value.
+        let star = "*"
+        #expect(try await view.run(on: store, where: [.payload("id"): .bound(star)]) == ["*"])
+    }
+
+    @Test func aRuntimeStarLiteralYieldsToABindingsOwnValue() async throws {
+        let view = StateView(initial: [String](), bindings: [
+            .on(TestEvent.self, where: [.payload("id"): "x"]) { acc, e in acc.append(e.id) },
+        ])
+        let store = InMemoryEventStore()
+        try await store.append([TestEvent(id: "x", num: 1), TestEvent(id: "y", num: 1)])
+        #expect(try await view.run(on: store, where: [.payload("id"): "*"]) == ["x"])
+    }
+
+    @Test func aBoundStarIsNotAWildcardInABindingOrAtRuntime() async throws {
+        let store = InMemoryEventStore()
+        try await store.append([TestEvent(id: "x", num: 1), TestEvent(id: "*", num: 2)])
+        let exact = StateView(initial: [String](), bindings: [
+            .on(TestEvent.self, where: [.payload("id"): .bound("*")]) { acc, e in acc.append(e.id) },
+        ])
+        #expect(try await exact.run(on: store) == ["*"])
+        // Against an own value, a runtime exact star conflicts instead of yielding.
+        let own = StateView(initial: [String](), bindings: [
+            .on(TestEvent.self, where: [.payload("id"): "x"]) { acc, e in acc.append(e.id) },
+        ])
+        await #expect(throws: LedjerError.self) { try await own.run(on: store, where: [.payload("id"): .bound("*")]) }
+        // And an exact star of the binding conflicts with a runtime value.
+        await #expect(throws: LedjerError.self) { try await exact.run(on: store, where: [.payload("id"): "x"]) }
+    }
+
     @Test func runtimeBindingsConflictingWithABindingsOwn() async throws {
         let store = InMemoryEventStore()
         try await store.append([TestEvent(id: "abc-123", num: 10), TestEventWithVersionTag(id: "abc-222", num: 5)])
@@ -196,6 +234,9 @@ struct MaybeTagged: Event {
             ([id: .any], [num: .any]),
             ([id: .any, num: 1], [num: 1]),
             ([num: 1], [id: .any, num: 1]),
+            ([:], [id: "*"]),
+            ([id: "*"], [id: .any]),
+            ([id: "*", num: 1], [num: 1]),
         ]
         for (first, second) in pairs {
             let view = StateView(initial: 0, bindings: [
@@ -219,6 +260,8 @@ struct MaybeTagged: Event {
             ([id: "a"], [:]),
             ([id: .any, num: 1], [num: 2]),
             ([id: "a"], [num: 1]),
+            ([id: .bound("*")], [:]),  // an exact star restricts
+            ([id: .bound("*")], [id: "*"]),
         ]
         for (first, second) in pairs {
             let view = StateView(initial: 0, bindings: [

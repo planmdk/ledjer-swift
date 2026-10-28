@@ -265,4 +265,67 @@ struct SameNameOtherSource: Event {
         #expect(!query.matches(type: "contract/order-placed", tags: [:]))
         #expect(!query.matches(type: "contract/order-noted", tags: [.payload("orderId"): .uuid(id)]))
     }
+
+    // MARK: The "*" literal
+
+    @Test func aStringLiteralStarIsTheWildcard() throws {
+        let literal: TagBinding = "*"
+        #expect(literal == .any)
+        #expect(literal != .value(.string("*")))
+        #expect(("a" as TagBinding) == .value(.string("a")))
+        // Only the whole literal: not a prefix, not padded, not empty.
+        for other: TagBinding in ["**", " *", "* ", "", "a*"] { #expect(other != .any) }
+
+        let name = TagPath.payload("name")
+        let wildcard = try EventQuery.of(StoreContract.StringTagged.self, where: [name: "*"])
+        let any = try EventQuery.of(StoreContract.StringTagged.self, where: [name: .any])
+        #expect(wildcard == any)
+        #expect(wildcard.selectors.first?.required == [:])
+        #expect(wildcard.matches(type: "contract/string-tagged", tags: [name: .string("x")]))
+        #expect(wildcard.matches(type: "contract/string-tagged", tags: [name: .string("*")]))
+        #expect(wildcard.matches(type: "contract/string-tagged", tags: [:]))  // the tag is missing
+    }
+
+    @Test func boundAndWrappedStarsAreExact() throws {
+        let name = TagPath.payload("name")
+        let variable = "*"  // computed, not a literal of a TagBinding
+        let exact: [TagBinding] = [.bound("*"), .value(.string("*")), .bound(variable), .bound(String(repeating: "*", count: 1))]
+        for binding in exact {
+            #expect(binding == .value(.string("*")))
+            #expect(binding != .any)
+            let query = try EventQuery.of(StoreContract.StringTagged.self, where: [name: binding])
+            #expect(query != (try EventQuery.of(StoreContract.StringTagged.self, where: [name: .any])))
+            #expect(query.selectors.first?.required == [name: .string("*")])
+            #expect(query.matches(type: "contract/string-tagged", tags: [name: .string("*")]))
+            #expect(!query.matches(type: "contract/string-tagged", tags: [name: .string("x")]))
+            #expect(!query.matches(type: "contract/string-tagged", tags: [:]))
+        }
+    }
+
+    @Test func aStarSelectsLikeTheWildcardInAStore() async throws {
+        let store = InMemoryEventStore()
+        try await store.append([
+            StoreContract.StringTagged(name: "a"),  // 1
+            StoreContract.StringTagged(name: "*"),  // 2
+            StoreContract.StringTagged(name: "b"),  // 3
+            OrderPlaced(orderId: UUID()),  // 4: no customer tag value
+            OrderPlaced(orderId: UUID(), customer: "*"),  // 5
+        ])
+        func positions<E: Event>(_ type: E.Type, _ path: TagPath, _ binding: TagBinding) async throws -> [Position] {
+            try await store.source(EventQuery.of(type, where: [path: binding])).map(\.position)
+        }
+        let name = TagPath.payload("name"), customer = TagPath.payload("customer")
+        let variable = "*"
+        #expect(try await positions(StoreContract.StringTagged.self, name, "*") == [1, 2, 3])
+        #expect(try await positions(StoreContract.StringTagged.self, name, .any) == [1, 2, 3])
+        #expect(try await positions(StoreContract.StringTagged.self, name, .bound("*")) == [2])
+        #expect(try await positions(StoreContract.StringTagged.self, name, .value(.string("*"))) == [2])
+        #expect(try await positions(StoreContract.StringTagged.self, name, .bound(variable)) == [2])
+        // An event without the tag matches the wildcard only.
+        #expect(try await positions(OrderPlaced.self, customer, "*") == [4, 5])
+        #expect(try await positions(OrderPlaced.self, customer, .bound("*")) == [5])
+        // In a dictionary literal too.
+        let dictionary = try EventQuery.of(OrderPlaced.self, where: [customer: "*"])
+        #expect(try await store.source(dictionary).map(\.position) == [4, 5])
+    }
 }

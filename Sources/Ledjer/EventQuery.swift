@@ -2,8 +2,10 @@ import Foundation
 
 /// What a query requires of a tag.
 ///
-/// Literals are exact values: `[.payload("id"): "abc"]`. Use `.any` for a
-/// wildcard (there is no magic `"*"` string).
+/// Literals are exact values: `[.payload("id"): "abc"]`, except the string literal `"*"`, which, as in the
+/// Clojure library, is the wildcard `.any`. That holds for a literal written in source only: a string that
+/// is computed (`.bound(name)`) or wrapped (`.value(.string("*"))`) is always an exact value, so user input
+/// never becomes a wildcard by accident. Use `.bound("*")` to match a literal star.
 public enum TagBinding: Hashable, Sendable {
     /// Matches any value, including events without the tag.
     case any
@@ -14,7 +16,8 @@ public enum TagBinding: Hashable, Sendable {
 }
 
 extension TagBinding: ExpressibleByStringLiteral, ExpressibleByIntegerLiteral, ExpressibleByBooleanLiteral {
-    public init(stringLiteral value: String) { self = .value(.string(value)) }
+    /// `"*"` is `.any`; any other string is that exact value.
+    public init(stringLiteral value: String) { self = value == "*" ? .any : .value(.string(value)) }
     public init(integerLiteral value: Int) { self = .value(.int(value)) }
     public init(booleanLiteral value: Bool) { self = .value(.bool(value)) }
 }
