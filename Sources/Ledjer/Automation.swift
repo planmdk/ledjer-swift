@@ -31,8 +31,15 @@ public struct Trigger: Sendable {
     }
 
     /// Fires every `interval`, from when the automation starts until it stops.
+    ///
+    /// While the body is busy and a tick already waits, the next tick waits for that one to be taken
+    /// (as Clojure's `periodic` blocks on its buffer-1 channel) rather than being dropped or spinning.
+    ///
+    /// `interval` must be positive: a zero or negative interval is a programmer error and traps.
+    /// (Clojure accepts `(periodic 0)` and ticks as fast as the body allows. That is a busy loop, so not here.)
     public static func periodic(every interval: Duration) -> Trigger {
-        Trigger(kind: .periodic(interval))
+        precondition(interval > .zero, "Trigger.periodic(every:) needs a positive interval, got \(interval)")
+        return Trigger(kind: .periodic(interval))
     }
 }
 
@@ -55,6 +62,8 @@ public enum AutomationError: Error, CustomStringConvertible {
 final class TickGate: @unchecked Sendable {
     private let lock = NSLock()
     private var pending = false
+    private var nextID = 0
+    private var waiters: [(id: Int, continuation: CheckedContinuation<Bool, Never>)] = []
 
     /// Whether a tick should be passed on: not while an earlier one still waits.
     func arm() -> Bool {
@@ -65,8 +74,61 @@ final class TickGate: @unchecked Sendable {
         }
     }
 
-    /// The pending tick is being served: the next one is a new one.
-    func clear() { lock.withLock { pending = false } }
+    /// Like `arm()`, but waits for the pending tick to be served instead of giving up: the blocking
+    /// put of Clojure's buffer-1 channel. `false` if the task is cancelled while it waits.
+    func armWhenFree() async -> Bool {
+        let id = lock.withLock {
+            nextID += 1
+            return nextID
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                let outcome: Bool? = lock.withLock {
+                    // The handler below may have run before this: look at the task, not just the waiters.
+                    if Task.isCancelled { return false }
+                    if !pending {
+                        pending = true
+                        return true
+                    }
+                    waiters.append((id, continuation))
+                    return nil
+                }
+                if let outcome { continuation.resume(returning: outcome) }
+            }
+        } onCancel: {
+            let waiter = lock.withLock {
+                waiters.firstIndex { $0.id == id }.map { waiters.remove(at: $0) }
+            }
+            waiter?.continuation.resume(returning: false)
+        }
+    }
+
+    /// The pending tick is being served: the next one is a new one (or the one that waits goes first).
+    func clear() {
+        let next = lock.withLock {
+            if waiters.isEmpty {
+                pending = false
+                return nil as CheckedContinuation<Bool, Never>?
+            }
+            return waiters.removeFirst().continuation  // the slot passes on to the waiter
+        }
+        next?.resume(returning: true)
+    }
+}
+
+/// The loop of a periodic trigger: wait `interval`, then pass a tick on, waiting for the slot if an
+/// earlier tick is still pending. Never spins: each round waits for the interval *and* for a free slot.
+func runPeriodicTicks(
+    every interval: Duration,
+    gate: TickGate,
+    fire: AsyncStream<TickGate?>.Continuation,
+    sleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+) async {
+    while !Task.isCancelled {
+        try? await sleep(interval)
+        if Task.isCancelled { break }
+        if await gate.armWhenFree() { fire.yield(gate) }
+    }
 }
 
 /// A running automation. Keep the handle for as long as it should run: it stops
@@ -163,13 +225,7 @@ public func automation(
                 })
             case .periodic(let interval):
                 let gate = TickGate()
-                handle.add(Task {
-                    while !Task.isCancelled {
-                        try? await Task.sleep(for: interval)
-                        if Task.isCancelled { break }
-                        if gate.arm() { fire.yield(gate) }
-                    }
-                })
+                handle.add(Task { await runPeriodicTicks(every: interval, gate: gate, fire: fire) })
             }
         }
     } catch {

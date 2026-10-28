@@ -129,6 +129,9 @@ or equal events can compare unequal.
   A `Trigger` is a description that each automation starts itself, so it can be shared;
   `Trigger.signal` takes a stream factory instead of a core.async channel, and `Trigger.periodic(every:)`
   is a trigger of its own where Clojure has `automation/periodic`, a helper that makes such a channel.
+  `periodic(every:)` needs a positive interval (a precondition): Clojure's `(periodic 0)` ticks as fast
+  as the body allows, which is a busy loop. Like Clojure's blocking put, a tick that finds one still
+  waiting waits for it to be taken; it doesn't spin and isn't dropped.
 - **Duplicate event triggers** run once per entry. Clojure collects the plain event types of its triggers
   into a set (`(into #{} (filter keyword? ...))`), so listing a type twice is the same as listing it
   once; here `[.event(A.self), .event(A.self)]` runs the body twice for each `A`. (Tagged triggers are

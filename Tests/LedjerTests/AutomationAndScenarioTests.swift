@@ -1,5 +1,5 @@
 import Foundation
-import Ledjer
+@testable import Ledjer
 import LedjerStoreContract
 import Testing
 
@@ -145,6 +145,38 @@ private func reactImmediately(_ store: any EventStore) async throws -> Automatio
         // Fast again: the next 6 ticks and the one that was waiting, not the 45 that were missed.
         #expect(runs.value - before < 14, "runs in the 60 ms after: \(runs.value - before)")
         running.stop()
+    }
+
+    /// Drives the periodic loop with a sleep that returns at once, so the only thing that can hold it
+    /// back is the gate. A loop that polled `arm()` would spin through sleeps while the body is busy.
+    @Test func aPeriodicTriggerWaitsForABusyBodyInsteadOfSpinning() async throws {
+        let gate = TickGate()
+        let (ticks, fire) = AsyncStream<TickGate?>.makeStream()
+        let sleeps = Counter()
+        let loop = Task {
+            await runPeriodicTicks(every: .milliseconds(1), gate: gate, fire: fire) { _ in
+                sleeps.increment()
+                await Task.yield()
+            }
+        }
+        // The first tick is passed on; nothing serves it (the body is "busy"), so the second waits.
+        try await sleeps.wait(for: 2)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(sleeps.value == 2, "sleeps while the body is busy: \(sleeps.value)")
+
+        // The body takes the pending tick: the waiting one goes next, and then the loop waits again.
+        gate.clear()
+        try await sleeps.wait(for: 3)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(sleeps.value == 3, "sleeps after one tick was served: \(sleeps.value)")
+
+        // Cancelling releases a loop that waits for the slot.
+        loop.cancel()
+        await loop.value
+        fire.finish()
+        var passedOn = 0
+        for await _ in ticks { passedOn += 1 }
+        #expect(passedOn == 2)
     }
 
     @Test func aSlowBodyDoesNotBuildABacklogOfSignals() async throws {
