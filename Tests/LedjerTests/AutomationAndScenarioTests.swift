@@ -54,6 +54,40 @@ private func reactImmediately(_ store: any EventStore) async throws -> Automatio
         }
     }
 
+    /// The automation is stopped when the scenario is over, however it ends: it must not go on
+    /// reacting to the events of a store that nobody looks at any more.
+    @Test func theAutomationIsStoppedWhenTheScenarioIsOver() async throws {
+        for succeeds in [true, false] {
+            let started = Box<(running: Automation, store: any EventStore)?>(nil)
+            let runs = Counter()
+            let start: @Sendable (any EventStore) async throws -> Automation = { store in
+                let running = try await automation(on: store, triggers: [.event(Counted.self)]) { store in
+                    runs.increment()
+                    try await store.append([Reacted(id: "a")])
+                }
+                started.value = (running, store)
+                return running
+            }
+            do {
+                try await gt(
+                    automation: start,
+                    given: [Counted(id: "a", num: 1)],
+                    then: [Reacted(id: succeeds ? "a" : "nope")],
+                    timeout: .milliseconds(300)
+                )
+                #expect(succeeds)
+            } catch is ScenarioFailure {
+                #expect(!succeeds)
+            }
+            let (running, store) = try #require(started.value)
+            #expect(!running.isRunning, "still running after a scenario that \(succeeds ? "passed" : "failed")")
+            let before = runs.value
+            try await store.append([Counted(id: "b", num: 2)])
+            try await Task.sleep(for: .milliseconds(100))
+            #expect(runs.value == before, "the automation reacted after the scenario was over")
+        }
+    }
+
     @Test func timesOutWhenTheAutomationDoesNotReact() async throws {
         await #expect(throws: ScenarioFailure.self) {
             try await gt(
