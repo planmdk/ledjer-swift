@@ -35,6 +35,7 @@ public enum StoreContract {
         try await lastPositions(makeStore)
         try await subscribeFromNow(makeStore)
         try await subscribeWithStartPosition(makeStore)
+        try await startPositionsBelowOneReadEverything(makeStore)
         try await subscribeTerminationDoesNotDisturbAppends(makeStore)
         try await cancellingAConsumerEndsTheStreamWithoutAnError(makeStore)
     }
@@ -629,6 +630,23 @@ public enum StoreContract {
             for _ in 0..<20 { live += try await appendOrders(store, 1) }
             let got = try orderIds(try await c.settled())
             try check(got == ids + live, "no gaps or duplicates: \(got.count) of \(ids.count + live.count)")
+            c.cancel()
+        }
+    }
+
+    /// A start position below 1, `Int.min` included, is the same as 1: everything. (A store that
+    /// computes with the position, e.g. `startPosition - 1`, must not overflow on it.)
+    public static func startPositionsBelowOneReadEverything(_ makeStore: StoreFactory) async throws {
+        let store = try await makeStore()
+        let ids = (0..<3).map { _ in UUID() }
+        try await store.append(ids.map { OrderPlaced(orderId: $0) })
+        let query = try EventQuery.of(OrderPlaced.self)
+        for start in [1, 0, -1, Int.min + 1, Int.min] {
+            let sourced = try await store.source(query, startPosition: start)
+            try check(sourced.map(\.position) == [1, 2, 3], "source from \(start): \(sourced.map(\.position))")
+            let c = Collector(try await store.subscribe(query, startPosition: start))
+            let got = try orderIds(try await c.settled())
+            try check(got == ids, "subscribe from \(start) replays everything: \(got.count)")
             c.cancel()
         }
     }

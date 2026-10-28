@@ -65,7 +65,8 @@ public final class GRDBEventStore: EventStore {
 
     public func source(_ query: EventQuery, startPosition: Position?) async throws -> [StoredEvent] {
         try Self.checkSelectorCount(query)
-        let after = max((startPosition ?? 0) - 1, 0)
+        // Clamped before subtracting: `Int.min - 1` would trap.
+        let after = max(startPosition ?? 0, 1) - 1
         return try await writer.read { db in
             try Self.fetch(db, query, after: after, upTo: nil, limit: nil)
         }
@@ -119,7 +120,7 @@ public final class GRDBEventStore: EventStore {
         // appended after this call returns can be missed.
         let initiallyDelivered: Position
         if let startPosition {
-            initiallyDelivered = max(startPosition - 1, 0)
+            initiallyDelivered = max(startPosition, 1) - 1
         } else {
             initiallyDelivered = try await writer.read(Self.head)
         }

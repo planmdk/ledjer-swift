@@ -52,6 +52,9 @@ private struct RacyStore: EventStore {
     @Test func lastPositions() async throws { try await StoreContract.lastPositions(Self.make) }
     @Test func subscribeFromNow() async throws { try await StoreContract.subscribeFromNow(Self.make) }
     @Test func subscribeWithStartPosition() async throws { try await StoreContract.subscribeWithStartPosition(Self.make) }
+    @Test func startPositionsBelowOneReadEverything() async throws {
+        try await StoreContract.startPositionsBelowOneReadEverything(Self.make)
+    }
     @Test func subscribeTermination() async throws {
         try await StoreContract.subscribeTerminationDoesNotDisturbAppends(Self.make)
     }
