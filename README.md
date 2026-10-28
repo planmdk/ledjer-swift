@@ -80,7 +80,15 @@ or equal events can compare unequal.
   fixed-width integers that fit an `Int`: `Int8`/`16`/`32` and `UInt8`/`16`, and `Int64` and `UInt32` where
   `Int` is 64 bits wide (not on arm64_32, for one), which become the same `.int` as an `Int` of that
   value; `Int` itself is as wide as the platform). `UInt`, `UInt64`, `Double`, `Date` and the like aren't tag
-  values: convert them yourself, deliberately. The `"*"` wildcard string is `.any`.
+  values: convert them yourself, deliberately.
+- **The `"*"` wildcard** is the same as in Clojure when written as a string literal: `[tag: "*"]` is
+  `[tag: .any]`, which matches any value, including events without the tag. It is a wildcard only as a
+  literal in source. A string that is computed or wrapped is always an exact value (`.bound(name)`,
+  `.value(.string("*"))`, also at run time in `StateView.run(on:where:)`), so user input can never turn
+  into a wildcard by accident. This is deliberately stricter than Clojure, where a runtime `"*"` is a
+  wildcard too, and it makes a literal star queryable: `.bound("*")` matches events whose tag value is
+  exactly `"*"`, which Clojure cannot query for (there `"*"` as a tag value is stored but only a
+  wildcard can reach it). Only the whole string `"*"` is special: `"**"` or `"a*"` are ordinary values.
 - **Strings match by their UTF-8 bytes**, as in Clojure and the GRDB store, not by Unicode canonical
   equivalence as Swift's `String ==` does: tag values, tag names and event types written as the precomposed
   "café" and as "cafe\u{301}" are different. (`Metadata` keys are the exception: a plain dictionary,
