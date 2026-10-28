@@ -201,7 +201,11 @@ or equal events can compare unequal.
 - **`gwt`/`gt`** throw `ScenarioFailure` instead of calling `clojure.test/is`, so they work with
   XCTest and Swift Testing alike. With an empty `then` they assert that nothing was appended (in
   Clojure such a scenario passes trivially). `gt(view:)` doesn't report failures to `onError` by
-  default, as in Clojure, since it throws them.
+  default, as in Clojure, since it throws them. Its `options:` is a closure that changes the
+  scenario's defaults (`maxInterval` of 10 ms, no `onError`) rather than replacing them, which is
+  Clojure's `(merge {:max-ms 10 :on-error …} opts)`:
+  `gt(view: v, accumulator: acc, options: { $0.maxSize = 8 }, …)` still has no `onError`. Set
+  `$0.onError` in it to see failures reported after all.
 - **`gwt`/`gt` compare events as JSON bytes** (type and payload, keys sorted), where Clojure compares
   values with `=`. Equal events encode equally, except for collections whose encoding follows their
   iteration order: a `Set`, or a dictionary with non-`String` keys (encoded as an array), built

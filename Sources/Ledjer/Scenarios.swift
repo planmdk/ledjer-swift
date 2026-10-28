@@ -147,15 +147,15 @@ public func gt(
 ///
 /// `accumulator` must be fresh: create it per scenario. The view closes it
 /// when done. `then` runs once the view has committed every given event it applies.
+///
+/// `options` changes the scenario's defaults, which are a `maxInterval` of 10 ms and no `onError`
+/// (a failure is thrown by `awaitPosition`, not also reported), the other options being those of
+/// `PersistedViewOptions()`. It merges over them, as Clojure's `opts` does: changing only `maxSize`
+/// keeps the other two defaults.
 public func gt<A: PersistedAccumulator>(
     view: PersistedStateView<A.Operation>,
     accumulator: A,
-    options: PersistedViewOptions = {
-        var options = PersistedViewOptions()
-        options.maxInterval = .milliseconds(10)
-        options.onError = nil  // a failure is thrown by `awaitPosition`, not also reported (as in Clojure)
-        return options
-    }(),
+    options configure: (inout PersistedViewOptions) -> Void = { _ in },
     given: [any Event] = [],
     then predicate: (A) async throws -> Bool,
     timeout: Duration = .seconds(1)
@@ -163,6 +163,10 @@ public func gt<A: PersistedAccumulator>(
     guard try await accumulator.sequenceNumber == nil else {
         throw ScenarioFailure("The accumulator must be fresh. Create it per scenario.")
     }
+    var options = PersistedViewOptions()
+    options.maxInterval = .milliseconds(10)
+    options.onError = nil
+    configure(&options)
     let store = InMemoryEventStore()
     let running = try await view.start(on: store, accumulator: accumulator, options: options)
     do {

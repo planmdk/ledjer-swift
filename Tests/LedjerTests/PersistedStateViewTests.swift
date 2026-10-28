@@ -111,6 +111,56 @@ private func fastOptions(maxSize: Int = 64, maxInterval: Duration = .millisecond
         }
     }
 
+    /// Options passed to `gt(view:)` change its defaults; they don't replace them (Clojure merges the
+    /// caller's opts over `{:max-ms 10 :on-error noop}`).
+    @Test func gtOptionsAreMergedOverTheScenarioDefaults() async throws {
+        let seen = Box<PersistedViewOptions?>(nil)
+        try await gt(
+            view: totalsView,
+            accumulator: TotalsAccumulator(),
+            options: {
+                seen.value = $0
+                $0.maxSize = 8
+            },
+            given: [Counted(id: "a", num: 1)],
+            then: { _ in true }
+        )
+        let defaults = try #require(seen.value)
+        #expect(defaults.maxInterval == .milliseconds(10))
+        #expect(defaults.onError == nil)
+        #expect(defaults.maxSize == PersistedViewOptions().maxSize)  // the rest is `PersistedViewOptions()`
+    }
+
+    @Test func aCallerOnErrorAndMaxIntervalWin() async throws {
+        struct Boom: Error {}
+        let failing = PersistedStateView<Add>(bindings: [.on(Counted.self) { _ in throw Boom() }])
+        let reported = ErrorBox()
+        await #expect(throws: PersistedViewError.self) {
+            try await gt(
+                view: failing,
+                accumulator: TotalsAccumulator(),
+                options: { $0.onError = { reported.set($0) } },
+                given: [Counted(id: "a", num: 1)],
+                then: { _ in true }
+            )
+        }
+        try await eventually { reported.value != nil }
+        #expect(reported.value is PersistedViewError)
+
+        // A 30 s `maxInterval` is the caller's, not the scenario's 10 ms: nothing commits in time.
+        do {
+            try await gt(
+                view: totalsView,
+                accumulator: TotalsAccumulator(),
+                options: { $0.maxInterval = .seconds(30) },
+                given: [Counted(id: "a", num: 1)],
+                then: { _ in true },
+                timeout: .milliseconds(200)
+            )
+            Issue.record("expected the await to time out")
+        } catch PersistedViewError.awaitTimedOut {}
+    }
+
     @Test func waitsForTheLastAppliedEventWhenTheLastGivenIsNotApplied() async throws {
         try await gt(
             view: totalsView,
@@ -352,6 +402,16 @@ private func fastOptions(maxSize: Int = 64, maxInterval: Duration = .millisecond
                 return a == 1 && b == 0
             }
         )
+    }
+}
+
+final class Box<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: Value
+    init(_ value: Value) { _value = value }
+    var value: Value {
+        get { lock.withLock { _value } }
+        set { lock.withLock { _value = newValue } }
     }
 }
 

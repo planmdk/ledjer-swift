@@ -86,5 +86,20 @@ private func captureStandardError(_ body: () async throws -> Void) async throws 
         }
         #expect(!output.contains("ReportedMarker"), "got: \(output)")
     }
+
+    /// Changing another option must not bring back the default `onError` (which reports).
+    @Test func gtReportsNothingForAFailureItThrowsWhenOtherOptionsAreChanged() async throws {
+        let output = try await captureStandardError {
+            do {
+                try await gt(
+                    view: failingView, accumulator: TotalsAccumulator(),
+                    options: { $0.maxSize = 8 },
+                    given: [Counted(id: "a", num: 1)], then: { _ in true })
+                Issue.record("expected the scenario to throw")
+            } catch is PersistedViewError {}
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        #expect(!output.contains("ReportedMarker"), "got: \(output)")
+    }
 }
 #endif
