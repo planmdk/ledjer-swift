@@ -107,7 +107,10 @@ or equal events can compare unequal.
 - **Automations** report a throwing body to `onError` and keep running. In Clojure a throwing body
   ends the go-loop and the exception goes to the uncaught exception handler. A failing event
   subscription, or one that ends, is reported and stops the automation (`isRunning`). A `.signal`
-  stream that finishes is not reported: like a closed channel in Clojure, it just never fires again.
+  stream that finishes is ignored: that trigger never fires again, nothing is reported, and the other
+  triggers keep working. Clojure does neither: `alts!` on a closed channel returns `nil` at once, and as
+  that channel isn't the stop channel the go-loop calls the body again, in a tight loop (the same for a
+  closed subscription channel). Swift deliberately doesn't busy-loop the body.
   Periodic and signal ticks coalesce while the body is busy (one more run, not one each), similar to
   Clojure's buffer-1 channel; each event of an event trigger is a run. `automation` returns a handle that
   stops the automation on `stop()` or when dropped.
