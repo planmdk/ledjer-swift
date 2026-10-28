@@ -124,7 +124,9 @@ or equal events can compare unequal.
 - **Duplicate event triggers** run once per entry. Clojure collects the plain event types of its triggers
   into a set (`(into #{} (filter keyword? ...))`), so listing a type twice is the same as listing it
   once; here `[.event(A.self), .event(A.self)]` runs the body twice for each `A`. (Tagged triggers are
-  one subscription each in both, so a tagged duplicate runs twice there too.)
+  one subscription each in both, so a tagged duplicate runs twice there too, when the Clojure triggers are
+  passed as a vector: `automation` documents a set of triggers, and in a set duplicate
+  `[type bindings]` pairs collapse into one.)
 - **Duplicate bindings** of a view are an error. Clojure collects the bindings that match an event into a
   map keyed by the binding's type (and tag bindings), so identical keys collapse and the last reducer
   wins (`into {}`); here two bindings of one type with the same tag bindings make `run(on:)`/`start(on:)`
