@@ -68,6 +68,25 @@ struct MaybeTagged: Event {
         #expect(try await view.run(on: store, where: [.payload("id"): .any]) == 15)
     }
 
+    @Test func aBindingsOwnAnyYieldsToARuntimeValue() async throws {
+        let view = StateView(initial: [String](), bindings: [
+            .on(TestEvent.self, where: [.payload("id"): .any]) { acc, e in acc.append(e.id) },
+        ])
+        let store = InMemoryEventStore()
+        try await store.append([TestEvent(id: "x", num: 1), TestEvent(id: "y", num: 1), TestEvent(id: "x", num: 1)])
+        #expect(try await view.run(on: store, where: [.payload("id"): "x"]) == ["x", "x"])
+        #expect(try await view.run(on: store) == ["x", "y", "x"])
+    }
+
+    @Test func aRuntimeAnyYieldsToABindingsOwnValue() async throws {
+        let view = StateView(initial: [String](), bindings: [
+            .on(TestEvent.self, where: [.payload("id"): "x"]) { acc, e in acc.append(e.id) },
+        ])
+        let store = InMemoryEventStore()
+        try await store.append([TestEvent(id: "x", num: 1), TestEvent(id: "y", num: 1)])
+        #expect(try await view.run(on: store, where: [.payload("id"): .any]) == ["x"])
+    }
+
     @Test func runtimeBindingsConflictingWithABindingsOwn() async throws {
         let store = InMemoryEventStore()
         try await store.append([TestEvent(id: "abc-123", num: 10), TestEventWithVersionTag(id: "abc-222", num: 5)])
