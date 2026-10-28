@@ -762,6 +762,34 @@ final class SleepRecorder: @unchecked Sendable {
         #expect(await acc.closed)
     }
 
+    /// README deviation: Clojure's `await-position` returns `nil` for these, a failed view throws at once.
+    @Test func awaitPositionOnAFailedViewThrowsTheFailureEvenWhenThereIsNothingToWaitFor() async throws {
+        struct Boom: Error {}
+        let store = InMemoryEventStore()
+        let failing = PersistedStateView<Add>(bindings: [.on(Counted.self) { _ in throw Boom() }])
+        var options = fastOptions()
+        options.onError = nil
+        let view = try await failing.start(on: store, accumulator: TotalsAccumulator(), options: options)
+        try await store.append([Counted(id: "a", num: 1)])
+        try await eventually { view.failure != nil }
+
+        for position: Position? in [nil, 0] {  // no position; no event applies up to it
+            do {
+                try await view.awaitPosition(position)
+                Issue.record("awaitPosition(\(String(describing: position))) returned on a failed view")
+            } catch PersistedViewError.reduce(_, let at, _) {
+                #expect(at == 1)
+            }
+        }
+        await view.close()
+        for position: Position? in [nil, 0] {
+            do {
+                try await view.awaitPosition(position)
+                Issue.record("awaitPosition(\(String(describing: position))) returned on a closed view")
+            } catch PersistedViewError.closed {}
+        }
+    }
+
     /// There is nothing past `Int.max`: the start position saturates instead of overflowing.
     @Test func aCheckpointAtIntMaxStartsTheViewAndReadsNothingPastIt() async throws {
         let store = InMemoryEventStore()

@@ -223,7 +223,8 @@ public final class PersistedViewHandle<Accumulator: PersistedAccumulator>: Senda
 
     /// Waits until the view has committed every event it applies up to and
     /// including `position`, e.g. as returned by `append`. Returns immediately
-    /// if `position` is `nil` or no such event applies to the view.
+    /// if `position` is `nil` or no such event applies to the view, unless the view has failed
+    /// or is closed: those throw at once, whatever the position.
     ///
     /// Throws the view's failure, `PersistedViewError.awaitTimedOut`, or
     /// `PersistedViewError.closed` if the view is, or gets, closed.
