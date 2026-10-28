@@ -204,6 +204,52 @@ private actor GatedAccumulator: PersistedAccumulator {
     }
 }
 
+struct SubscriptionStalled: Error, CustomStringConvertible {
+    let wanted: Int
+    let received: Int
+    let timeout: Duration
+    var description: String { "the subscription delivered \(received) of \(wanted) events within \(timeout): events were lost" }
+}
+
+/// Reads a live subscription with a deadline: a subscription that loses events never ends, so a
+/// plain loop over it would hang the test run instead of failing.
+final class SubscriptionReader: @unchecked Sendable {
+    private let lock = NSLock()
+    private var iterator: AsyncThrowingStream<StoredEvent, any Error>.AsyncIterator
+    private var _received = 0
+
+    init(_ stream: AsyncThrowingStream<StoredEvent, any Error>) {
+        iterator = stream.makeAsyncIterator()
+    }
+
+    var received: Int { lock.withLock { _received } }
+
+    /// Reads `count` more events and returns how many came (fewer only if the stream ended), or throws
+    /// `SubscriptionStalled` if they haven't all come after `timeout`.
+    func read(_ count: Int, timeout: Duration = .seconds(20)) async throws -> Int {
+        let before = received
+        return try await withThrowingTaskGroup(of: Int?.self) { group in
+            group.addTask { [self] in
+                var seen = 0
+                while seen < count, try await iterator.next() != nil {
+                    seen += 1
+                    lock.withLock { _received += 1 }
+                }
+                return seen
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                return nil
+            }
+            defer { group.cancelAll() }  // a cancelled subscription ends instead of waiting
+            guard let first = try await group.next(), let seen = first else {
+                throw SubscriptionStalled(wanted: count, received: received - before, timeout: timeout)
+            }
+            return seen
+        }
+    }
+}
+
 @Suite struct GRDBBackpressureTests {
     @Test func aSubscriptionReadsTheLogOnlyAsFastAsItIsConsumed() async throws {
         let reads = EventReads()
@@ -212,13 +258,13 @@ private actor GatedAccumulator: PersistedAccumulator {
         try await store.append((0..<3000).map { Deposited(account: "a", amount: $0) })
 
         let stream = try await store.subscribe(EventQuery.of(Deposited.self), startPosition: 0)
-        var iterator = stream.makeAsyncIterator()
-        for _ in 0..<10 { _ = try await iterator.next() }
+        let reader = SubscriptionReader(stream)
+        #expect(try await reader.read(10) == 10)
         #expect(reads.count == 1, "10 events asked for, one batch of 500 read: \(reads.count)")
 
-        var seen = 10
-        while seen < 3000, try await iterator.next() != nil { seen += 1 }
-        #expect(seen == 3000)
+        // Fails with `SubscriptionStalled` if events are lost, rather than waiting for them forever.
+        #expect(try await reader.read(2990) == 2990)
+        #expect(reader.received == 3000)
         #expect(reads.count == 6)  // 3000 events in batches of 500
     }
 
