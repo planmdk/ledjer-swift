@@ -287,6 +287,18 @@ private func reactImmediately(_ store: any EventStore) async throws -> Automatio
         #expect(runs.value == 0)
     }
 
+    /// Clojure's `subscribe` without `:start-sequence` only sees new events: an automation must not
+    /// run for events appended before it started.
+    @Test func anAutomationIgnoresEventsAppendedBeforeItStarted() async throws {
+        let store = InMemoryEventStore()
+        try await store.append([Counted(id: "a", num: 1)])
+        let runs = Counter()
+        let running = try await automation(on: store, triggers: [.event(Counted.self)]) { _ in runs.increment() }
+        try await Task.sleep(for: .milliseconds(200))
+        running.stop()
+        #expect(runs.value == 0)
+    }
+
     @Test func aDroppedAutomationStops() async throws {
         let store = InMemoryEventStore()
         let runs = Counter()
