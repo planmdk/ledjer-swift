@@ -37,6 +37,7 @@ public enum StoreContract {
         try await subscribeFromNow(makeStore)
         try await subscribeWithStartPosition(makeStore)
         try await startPositionsBelowOneReadEverything(makeStore)
+        try await subscribeToSeveralTypesAcrossBatches(makeStore)
         try await subscribeTerminationDoesNotDisturbAppends(makeStore)
         try await cancellingAConsumerEndsTheStreamWithoutAnError(makeStore)
     }
@@ -720,6 +721,20 @@ public enum StoreContract {
             try check(got == ids, "subscribe from \(start) replays everything: \(got.count)")
             c.cancel()
         }
+    }
+
+    /// A subscription to several types delivers every position, in order, when one type's events
+    /// fill more than a batch before the other's begin: a store that reads in batches must limit
+    /// the combined result of its selectors, not just each selector's.
+    public static func subscribeToSeveralTypesAcrossBatches(_ makeStore: StoreFactory) async throws {
+        let store = try await makeStore()
+        try await store.append((0..<600).map { _ in OrderPlaced(orderId: UUID()) })
+        try await store.append((0..<10).map { _ in OrderNoted(orderId: UUID(), note: "x") })
+        let query = try EventQuery.of(OrderPlaced.self, OrderNoted.self)
+        let c = Collector(try await store.subscribe(query, startPosition: 0))
+        let got = try await c.settled().map(\.position)
+        try check(got == Array(1...610), "positions across batches: \(got.count) of 610 delivered")
+        c.cancel()
     }
 
     public static func subscribeTerminationDoesNotDisturbAppends(_ makeStore: StoreFactory) async throws {
