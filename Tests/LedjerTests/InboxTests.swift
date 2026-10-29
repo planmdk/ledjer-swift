@@ -3,6 +3,25 @@ import Testing
 
 @testable import Ledjer
 
+private final class Outcome<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: T?
+    private var finished = false
+    var isFinished: Bool { lock.withLock { finished } }
+    func finish(_ value: T) { lock.withLock { (result, finished) = (value, true) } }
+    func take() -> T { lock.withLock { result! } }
+}
+
+/// The value of `task`, or a test failure if it hasn't finished within `timeout`: a bug that leaves
+/// `task` waiting forever must fail the test, not hang it. (`task.value` can't be raced with a timeout in
+/// a task group: the group waits for its children, and a wait on a task isn't cancellable.)
+private func value<T: Sendable>(of task: Task<T, Never>, within timeout: Duration = .seconds(5)) async throws -> T {
+    let outcome = Outcome<T>()
+    Task { outcome.finish(await task.value) }
+    try await eventually(timeout: timeout) { outcome.isFinished }
+    return outcome.take()
+}
+
 @Suite struct InboxTests {
     @Test func sendWaitsForRoomAndKeepsOrder() async throws {
         let inbox = Inbox<Int>(capacity: 2)
@@ -52,7 +71,7 @@ import Testing
         let blocked = Task { await inbox.send(2) }
         try await Task.sleep(for: .milliseconds(20))
         inbox.close()
-        #expect(await blocked.value == false)  // released, not hanging, and told that it was dropped
+        #expect(try await value(of: blocked) == false)  // released, not hanging, and told that it was dropped
         #expect(await inbox.send(3) == false)  // dropped
         inbox.post(4)  // dropped
         #expect(await inbox.receive() == 1)  // what was queued is still delivered
@@ -62,7 +81,7 @@ import Testing
         let receiver = Task { await waiting.receive() }
         try await Task.sleep(for: .milliseconds(20))
         waiting.close()
-        #expect(await receiver.value == nil)
+        #expect(try await value(of: receiver) == nil)
     }
 }
 
@@ -125,8 +144,8 @@ import Testing
             }
             try await Task.sleep(for: .microseconds(round * 40))
             inbox.close()
-            await producers.value  // every sender was released
-            let received = await consumer.value  // and the receiver saw the end
+            try await value(of: producers)  // every sender was released
+            let received = try await value(of: consumer)  // and the receiver saw the end
             #expect(Set(received).count == received.count, "round \(round): a message was delivered twice")
         }
     }
