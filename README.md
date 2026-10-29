@@ -64,7 +64,7 @@ Tests, in any framework:
 ```swift
 try await gwt(given: [Deposited(account: "a", amount: 5)],
               when: { try await withdraw($0, "a", 10) },
-              thenThrows: { _ in true })
+              thenThrows: { $0 is InsufficientFunds })  // name the error you expect: any error passes by default
 ```
 
 `gwt`/`gt` compare the events an automation or state change appended with the expected ones by their
@@ -198,6 +198,17 @@ or equal events can compare unequal.
   the same as in Clojure: an event without a tag, selected through an untagged binding of its type, also
   matches the type's tag-bound bindings, and the view throws "exactly one binding" for it. (Store queries,
   which decide what a view reads at all, require a bound tag to be present.)
+  Clojure tells a tag key that is missing from an event from one that is present with the value `nil`: the
+  first is ignored as above, the second is an ordinary value that a binding to another value rules out
+  (and `{tag nil}` binds to it; the in-memory store files tagless events under `nil` too). Swift has no
+  such second case: an optional tag property that is `nil` means the event doesn't carry the tag, and
+  there is no binding to `nil`. So such an event also matches the type's tag-bound bindings, and a view
+  with both an untagged and a tag-bound binding for that event type throws "exactly one binding" for it,
+  where Clojure with an explicit `nil` would pick the untagged one.
+- **`gwt(thenThrows:)` accepts any error by default.** Clojure's regex form only passes for an
+  `ExceptionInfo` whose message matches. Here `thenThrows` is a predicate that defaults to `{ _ in true }`,
+  so a state change that fails for the wrong reason (a bug, a decoding error) passes. Pass a specific
+  predicate (`{ $0 is InsufficientFunds }`, or one that inspects the message) to pin down the failure.
 - **`gwt`/`gt`** throw `ScenarioFailure` instead of calling `clojure.test/is`, so they work with
   XCTest and Swift Testing alike. With an empty `then` they assert that nothing was appended (in
   Clojure such a scenario passes trivially). `gt(view:)` doesn't report failures to `onError` by

@@ -49,7 +49,11 @@ public func gwt(
     }
 }
 
-/// Given `given` events, `change` fails with an error satisfying `matching` (any error by default).
+/// Given `given` events, `change` fails with an error satisfying `matching`.
+///
+/// By default any error passes, so a state change that fails for the wrong reason does too: pass a
+/// specific predicate (`{ $0 is InsufficientFunds }`) to pin the failure down. (Clojure's regex form
+/// only accepts an `ExceptionInfo` with a matching message.)
 public func gwt(
     given: [any Event] = [],
     when change: (any EventStore) async throws -> Void,
