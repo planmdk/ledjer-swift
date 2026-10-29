@@ -299,6 +299,25 @@ private func reactImmediately(_ store: any EventStore) async throws -> Automatio
         #expect(runs.value == 0)
     }
 
+    /// A task cancelled before it asks for the slot gets `false`, instead of waiting forever.
+    @Test func armWhenFreeInACancelledTaskGivesUp() async throws {
+        let gate = TickGate()
+        #expect(gate.arm())
+        let done = Counter()
+        let gaveUp = Counter()
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            if !(await gate.armWhenFree()) { gaveUp.increment() }
+            done.increment()
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        let finished = done.value == 1
+        gate.clear()  // releases a stuck waiter, so a failure here does not hang the run
+        await task.value
+        #expect(finished)
+        #expect(gaveUp.value == 1)
+    }
+
     @Test func aDroppedAutomationStops() async throws {
         let store = InMemoryEventStore()
         let runs = Counter()
