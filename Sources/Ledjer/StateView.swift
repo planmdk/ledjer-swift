@@ -37,13 +37,16 @@ struct EventSelector: Sendable {
     /// Whether this binding applies to `event`: the type matches and every bound tag has the
     /// bound value. As in Clojure's `has-bindings?`, a bound tag that the event doesn't have
     /// is not held against it: only a different value does.
-    func matches(_ event: StoredEvent) throws -> Bool {
+    ///
+    /// `values` yields the event's tag values, and is called only when a binding needs them, so that
+    /// a caller trying many bindings on one event can decode it once.
+    func matches(_ event: StoredEvent, tagValues values: () throws -> [TagPath: Scalar]) throws -> Bool {
         guard event.type == eventType.type else { return false }
         let required = tagBindings.compactMap { path, binding -> (TagPath, Scalar)? in
             if case .value(let v) = binding { (path, v) } else { nil }
         }
         if required.isEmpty { return true }
-        let values = try tagValues(event)
+        let values = try values()
         return required.allSatisfy { path, value in values[path].map { $0 == value } ?? true }
     }
 }
@@ -71,8 +74,18 @@ func checkBindings(_ selectors: [EventSelector]) throws {
 /// The handler of the one binding that applies to `event`. Throws unless exactly one does.
 func route<Handler>(_ event: StoredEvent, among bindings: [(selector: EventSelector, handler: Handler)]) throws -> Handler {
     var matching: [Handler] = []
+    // Decoding the event for its tag values is the costly part: do it once, for the first binding of
+    // the event's type that needs it. (Bindings only match events of their own type, and the types of
+    // a view's bindings are unique, so the values serve every binding that gets this far.)
+    var cached: [TagPath: Scalar]?
     for binding in bindings {
-        if try binding.selector.matches(event) { matching.append(binding.handler) }
+        let matched = try binding.selector.matches(event) {
+            if let cached { return cached }
+            let values = try binding.selector.tagValues(event)
+            cached = values
+            return values
+        }
+        if matched { matching.append(binding.handler) }
     }
     guard matching.count == 1 else {
         throw LedjerError.expectedExactlyOneBinding(eventType: event.type, matching: matching.count)
