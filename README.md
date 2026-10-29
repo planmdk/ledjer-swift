@@ -186,6 +186,9 @@ or equal events can compare unequal.
   returns `nil` in those cases (it first looks for an uncommitted event up to the position) and throws
   the failure only while it waits for one. The same goes for a closed view (`PersistedViewError.closed`),
   which Clojure has no counterpart of.
+- **`awaitPosition` polls what the view itself committed**, kept in memory (read from the accumulator at
+  start, updated after each commit of the view), where Clojure's `await-position` polls the accumulator's
+  `-sequence-number`. They differ only if something else commits the same checkpoint name, which is discouraged.
 - **A persisted view that fails to start closes its accumulator** before `start` throws. Clojure's
   `persisted-view*` doesn't: the caller is left with an accumulator (a connection, say) to close, and
   if it forgets, the accumulator leaks and its checkpoint stays held. In Swift the accumulator is the
