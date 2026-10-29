@@ -189,12 +189,22 @@ public final class Automation: @unchecked Sendable {
 /// subscription cancelled in flight, are not reported. If an event subscription fails, or ends, that is
 /// reported to `onError` and the whole automation stops (`isRunning` becomes `false`),
 /// rather than carrying on deaf to some of its triggers.
+///
+/// Throws `LedjerError.duplicateEventType` if event triggers name different Swift types that
+/// declare the same event type.
 public func automation(
     on store: some EventStore,
     triggers: [Trigger],
     onError: @escaping @Sendable (any Error) -> Void = ErrorReporter.default,
     body: @escaping @Sendable (any EventStore) async throws -> Void
 ) async throws -> Automation {
+    // Each event trigger is a query of its own, so the clash of two Swift types with one event type
+    // across triggers is not seen by any of them. Check before anything has been started.
+    try checkEventTypesAreUnique(
+        triggers.flatMap { trigger -> [(type: EventType, swift: any Event.Type)] in
+            guard case .events(let query) = trigger.kind else { return [] }
+            return query.items.flatMap { $0.eventTypes.map { (type: $0.type, swift: $0.swiftType) } }
+        })
     let (signals, fire) = AsyncStream<TickGate?>.makeStream()
     let handle = Automation(signals: fire)
     do {

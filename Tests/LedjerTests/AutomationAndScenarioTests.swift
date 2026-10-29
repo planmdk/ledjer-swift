@@ -265,6 +265,27 @@ private func reactImmediately(_ store: any EventStore) async throws -> Automatio
         running.stop()
     }
 
+    @Test func twoSwiftTypesWithOneEventTypeInDifferentTriggersAreRejected() async throws {
+        let store = InMemoryEventStore()
+        do {
+            _ = try await automation(on: store, triggers: [.event(SharedNameA.self), .event(SharedNameB.self)]) { _ in }
+            Issue.record("expected duplicateEventType")
+        } catch LedjerError.duplicateEventType(let type, let swiftTypes) {
+            #expect(type == SharedNameA.eventType)
+            #expect(swiftTypes.count == 2)
+        }
+        // Also when a trigger is tagged, and whatever else is in the list.
+        await #expect(throws: LedjerError.self) {
+            try await automation(
+                on: store,
+                triggers: [.periodic(every: .seconds(60)), .event(SharedNameA.self), try .event(SharedNameB.self, where: [.payload("id"): "x"])]
+            ) { _ in }
+        }
+        // The same Swift type in several triggers is fine.
+        let running = try await automation(on: store, triggers: [.event(SharedNameA.self), .event(SharedNameA.self)]) { _ in }
+        running.stop()
+    }
+
     @Test func periodicTicksStartWithTheAutomation() async throws {
         let trigger = Trigger.periodic(every: .milliseconds(10))
         try await Task.sleep(for: .milliseconds(200))  // time passes while the trigger exists

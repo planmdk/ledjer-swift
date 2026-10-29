@@ -156,8 +156,9 @@ or equal events can compare unequal.
   so two types declaring the same `eventType` would select each other's events and decode each other's
   payloads, and only the places that see both can notice. `EventQuery.of(…)`, `EventQueryItem.init` and `EventQuery.init` (across all of its
   items) throw `LedjerError.duplicateEventType` for two different Swift types with one event type (one
-  Swift type in several items is fine), and so do `run(on:)` and `start(on:)` of a view with such bindings. Two such types that never meet in one query or view
-  aren't detected. (An *empty* event type is accepted, as in Clojure.)
+  Swift type in several items is fine), and so do `run(on:)` and `start(on:)` of a view with such bindings,
+  and `automation(on:triggers:body:)` for its event triggers (Clojure's set of event types would collapse them).
+  Two such types that never meet in one query, view or automation aren't detected. (An *empty* event type is accepted, as in Clojure.)
 - **Persisted views** keep Clojure's `close()` semantics: stop has priority over queued events, so
   closing commits only what was already applied (the rest is left for the next run, which resumes
   after the checkpoint), waits for the worker at most `closeTimeout` (5 s), and then closes the accumulator.
