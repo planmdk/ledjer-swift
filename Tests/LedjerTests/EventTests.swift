@@ -41,7 +41,7 @@ struct SameNameOtherSource: Event {
         // Through the append that goes via NewEvent, which every store shares: nothing is appended.
         let store = InMemoryEventStore()
         await expectDuplicate { try await store.append([OrderPlaced(orderId: UUID()), DuplicateTagged(a: "a", b: "b")]) }
-        #expect(try await store.allEvents().isEmpty)
+        #expect(await store.allEvents().isEmpty)
         // The same name under another source is a different tag.
         let event = try NewEvent(SameNameOtherSource(version: 5))
         #expect(event.tags == [.payload("version"): .int(5), .metadata("version"): .int(1)])

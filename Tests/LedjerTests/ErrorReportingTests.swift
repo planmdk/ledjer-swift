@@ -15,7 +15,7 @@ private let failingView = PersistedStateView<Add>(bindings: [
 /// for what is unique to the test.
 private func captureStandardError(_ body: () async throws -> Void) async throws -> String {
     let url = URL(fileURLWithPath: NSTemporaryDirectory() + "ledjer-stderr-\(UUID().uuidString)")
-    FileManager.default.createFile(atPath: url.path, contents: nil)
+    _ = FileManager.default.createFile(atPath: url.path, contents: nil)
     let file = try FileHandle(forWritingTo: url)
     let saved = ErrorReporter.standardErrorHandle
     ErrorReporter.standardErrorHandle = file
